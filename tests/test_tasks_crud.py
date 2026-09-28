@@ -347,3 +347,18 @@ async def test_can_delete_finished_task(
     resp = await client.delete(f"{TASKS}/{task['id']}", headers=author["headers"])
 
     assert resp.status_code == 204
+
+
+@pytest.mark.parametrize("title", ["   ", "\t\n"])
+async def test_whitespace_only_title_is_rejected(
+    client: AsyncClient, create_user: UserFactory, create_task: TaskFactory, title: str
+) -> None:
+    author = await create_user()
+    task = await create_task(author)
+
+    created = await client.post(TASKS, json={"title": title}, headers=author["headers"])
+    updated = await client.patch(
+        f"{TASKS}/{task['id']}", json={"title": title}, headers=author["headers"]
+    )
+
+    assert created.status_code == updated.status_code == 422
