@@ -17,6 +17,8 @@ class UserShort(BaseModel):
 
 
 class TaskCreate(BaseModel):
+    model_config = ConfigDict(str_strip_whitespace=True)
+
     title: str = Field(min_length=1, max_length=255)
     description: str | None = None
     priority: TaskPriority = TaskPriority.MEDIUM
@@ -28,7 +30,7 @@ class TaskCreate(BaseModel):
 class TaskUpdate(BaseModel):
     """Partial update. Status is changed only via PATCH /tasks/{id}/status."""
 
-    model_config = ConfigDict(extra="forbid")
+    model_config = ConfigDict(extra="forbid", str_strip_whitespace=True)
 
     title: str | None = Field(default=None, min_length=1, max_length=255)
     description: str | None = None

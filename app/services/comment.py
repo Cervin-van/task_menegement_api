@@ -25,8 +25,10 @@ class CommentService:
             Comment(task_id=task_id, author_id=author.id, text=data.text)
         )
         await self.session.commit()
+        # Re-read with author loaded (relationships are lazy="raise").
         created = await self.comments.get(comment.id)
-        assert created is not None
+        if created is None:  # deleted concurrently together with its task (CASCADE)
+            raise task_not_found(task_id)
         return created
 
     async def list_for_task(

@@ -43,7 +43,9 @@ class TaskRepository:
             .execution_options(populate_existing=True)
         )
         if for_update:
-            stmt = stmt.with_for_update(of=Task)
+            # NO KEY UPDATE: serializes edits of this task, but (unlike FOR UPDATE) doesn't
+            # block FK checks (KEY SHARE) of inserts referencing it, e.g. new comments.
+            stmt = stmt.with_for_update(of=Task, key_share=True)
         return await self.session.scalar(stmt)
 
     async def exists(self, task_id: int) -> bool:
