@@ -56,6 +56,8 @@ services:
       POSTGRES_USER: postgres
       POSTGRES_PASSWORD: postgres
       POSTGRES_DB: tasks_test
+    ports:
+      - "127.0.0.1:${DB_TEST_HOST_PORT:-5441}:5432"   # локальний `uv run pytest`
     tmpfs:
       - /var/lib/postgresql/data
     healthcheck:
@@ -71,7 +73,7 @@ services:
     profiles: ["test"]
     environment:
       DATABASE_URL: postgresql+asyncpg://postgres:postgres@db_test:5432/tasks_test
-      JWT_SECRET_KEY: test-secret
+      JWT_SECRET_KEY: test-secret-key-at-least-32-bytes-long
     depends_on:
       db_test:
         condition: service_healthy
