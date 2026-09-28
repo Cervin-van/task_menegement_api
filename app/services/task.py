@@ -103,6 +103,17 @@ class TaskService:
                 await self._ensure_assignee_capacity(changes["assignee_id"], task, task.status)
 
         if "deadline" in changes and changes["deadline"] != task.deadline:
+            if user.id != task.author_id:
+                # Otherwise an assignee could extend an overdue task and still close it as done.
+                raise PermissionDeniedError(
+                    "Only the author can change the deadline", code="DEADLINE_CHANGE_FORBIDDEN"
+                )
+            overdue = task.deadline is not None and task.deadline < datetime.now(UTC)
+            if overdue and changes["deadline"] is None:
+                raise BusinessRuleError(
+                    "Deadline of an overdue task can be moved, not removed",
+                    code="OVERDUE_DEADLINE_REMOVAL_FORBIDDEN",
+                )
             self._ensure_deadline_not_past(changes["deadline"])
 
         for field, value in changes.items():

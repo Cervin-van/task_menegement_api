@@ -2,14 +2,15 @@ from datetime import datetime
 
 from pydantic import BaseModel, ConfigDict, Field
 
+from app.schemas.common import SafeStr
 from app.schemas.task import UserShort
 
 
 class CommentCreate(BaseModel):
-    model_config = ConfigDict(str_strip_whitespace=True)
+    model_config = ConfigDict(extra="forbid", str_strip_whitespace=True)
 
     # Stripped before length check -> whitespace-only text is rejected.
-    text: str = Field(min_length=1, max_length=5000)
+    text: SafeStr = Field(min_length=1, max_length=5000)
 
 
 class CommentRead(BaseModel):

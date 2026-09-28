@@ -1,11 +1,15 @@
 from datetime import datetime
 from enum import StrEnum
-from typing import Self
+from typing import Annotated, Self
 
-from pydantic import AwareDatetime, BaseModel, ConfigDict, Field, model_validator
+from pydantic import AfterValidator, BaseModel, ConfigDict, Field, model_validator
 
 from app.domain.status import TaskPriority, TaskStatus
-from app.schemas.common import DbId, PageParams
+from app.schemas.common import DbDatetime, DbId, DbIdQuery, PageParams, SafeStr
+
+Title = Annotated[SafeStr, Field(min_length=1, max_length=255)]
+# Whitespace-only description (stripped to "") is stored as NULL, not as an empty string.
+Description = Annotated[SafeStr, Field(max_length=10_000), AfterValidator(lambda v: v or None)]
 
 
 class UserShort(BaseModel):
@@ -20,12 +24,12 @@ class TaskCreate(BaseModel):
     # forbid: e.g. {"status": "done"} must not be silently ignored (status has its own endpoint).
     model_config = ConfigDict(extra="forbid", str_strip_whitespace=True)
 
-    title: str = Field(min_length=1, max_length=255)
-    description: str | None = None
+    title: Title
+    description: Description | None = None
     priority: TaskPriority = TaskPriority.MEDIUM
     assignee_id: DbId | None = None
-    # AwareDatetime: naive datetimes are rejected -> no ambiguity about timezone.
-    deadline: AwareDatetime | None = None
+    # Aware datetime only: naive datetimes are rejected -> no ambiguity about timezone.
+    deadline: DbDatetime | None = None
 
 
 class TaskUpdate(BaseModel):
@@ -33,11 +37,11 @@ class TaskUpdate(BaseModel):
 
     model_config = ConfigDict(extra="forbid", str_strip_whitespace=True)
 
-    title: str | None = Field(default=None, min_length=1, max_length=255)
-    description: str | None = None
+    title: Title | None = None
+    description: Description | None = None
     priority: TaskPriority | None = None
     assignee_id: DbId | None = None
-    deadline: AwareDatetime | None = None
+    deadline: DbDatetime | None = None
 
     @model_validator(mode="after")
     def _non_nullable_fields(self) -> Self:
@@ -49,6 +53,8 @@ class TaskUpdate(BaseModel):
 
 
 class TaskStatusUpdate(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
     status: TaskStatus
 
 
@@ -83,12 +89,12 @@ class TaskListQuery(PageParams):
 
     model_config = ConfigDict(extra="forbid")
 
-    search: str | None = Field(default=None, min_length=1, max_length=100)
+    search: Annotated[SafeStr, Field(min_length=1, max_length=100)] | None = None
     status: list[TaskStatus] = Field(default_factory=list)
     priority: list[TaskPriority] = Field(default_factory=list)
-    assignee_id: DbId | None = None
-    deadline_from: AwareDatetime | None = None
-    deadline_to: AwareDatetime | None = None
+    assignee_id: DbIdQuery | None = None
+    deadline_from: DbDatetime | None = None
+    deadline_to: DbDatetime | None = None
     sort_by: TaskSortField | None = None
     order: SortOrder | None = None
 

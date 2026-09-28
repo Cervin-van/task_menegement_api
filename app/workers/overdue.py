@@ -34,8 +34,10 @@ ADVISORY_LOCK_KEY = 7_340_001
 SessionFactoryType = Callable[[], AbstractAsyncContextManager[AsyncSession]]
 
 
-async def cancel_overdue(session: AsyncSession, now: datetime) -> list[TaskStatusChanged]:
-    """One pass: cancels all unfinished tasks whose deadline has passed.
+async def cancel_overdue(
+    session: AsyncSession, now: datetime, batch_size: int | None = None
+) -> list[TaskStatusChanged]:
+    """One batch: cancels up to `batch_size` unfinished tasks whose deadline has passed.
 
     Returns status-change events (same as for manual changes) to notify author/assignee.
 
@@ -44,6 +46,8 @@ async def cancel_overdue(session: AsyncSession, now: datetime) -> list[TaskStatu
     - Candidates are locked FOR NO KEY UPDATE SKIP LOCKED: a task a user is editing right now
       (e.g. moving it to done) is skipped, not waited for, and re-evaluated on the next pass.
     - One SELECT (with emails for notifications) + one bulk UPDATE, no per-row load-and-save.
+    - Bounded batch: short transactions, few locks, and the id list stays far below the
+      32767 bind-parameter limit even after a long worker downtime.
     """
     acquired = await session.scalar(select(func.pg_try_advisory_xact_lock(ADVISORY_LOCK_KEY)))
     if not acquired:
@@ -64,6 +68,8 @@ async def cancel_overdue(session: AsyncSession, now: datetime) -> list[TaskStatu
             .join(author, Task.author_id == author.id)
             .outerjoin(assignee, Task.assignee_id == assignee.id)
             .where(overdue_condition(now))
+            .order_by(Task.deadline)
+            .limit(batch_size or settings.overdue_batch_size)
             .with_for_update(of=Task, key_share=True, skip_locked=True)
         )
     ).all()
@@ -78,7 +84,8 @@ async def cancel_overdue(session: AsyncSession, now: datetime) -> list[TaskStatu
     )
     await session.commit()
 
-    logger.info("overdue.cancelled count=%d task_ids=%s", len(rows), [row.id for row in rows])
+    logger.info("overdue.cancelled count=%d", len(rows))
+    logger.debug("overdue.cancelled task_ids=%s", [row.id for row in rows])
     return [
         TaskStatusChanged(
             task_id=row.id,
@@ -91,16 +98,30 @@ async def cancel_overdue(session: AsyncSession, now: datetime) -> list[TaskStatu
     ]
 
 
+async def run_pass(session_factory: SessionFactoryType, batch_size: int) -> int:
+    """Cancels all currently overdue tasks, batch by batch (each in its own transaction)."""
+    total = 0
+    while True:
+        async with session_factory() as session:
+            events = await cancel_overdue(session, datetime.now(UTC), batch_size)
+        # After commit and outside the DB session: delivery can't hold locks or connections.
+        await dispatch_events(events)
+        total += len(events)
+        if len(events) < batch_size:
+            return total
+
+
 async def run_worker(
-    session_factory: SessionFactoryType, interval: float, stop: asyncio.Event
+    session_factory: SessionFactoryType,
+    interval: float,
+    stop: asyncio.Event,
+    batch_size: int | None = None,
 ) -> None:
-    logger.info("overdue.worker started interval=%ss", interval)
+    batch_size = batch_size or settings.overdue_batch_size
+    logger.info("overdue.worker started interval=%ss batch=%d", interval, batch_size)
     while not stop.is_set():
         try:
-            async with session_factory() as session:
-                events = await cancel_overdue(session, datetime.now(UTC))
-            # After commit and outside the DB session: delivery can't hold locks or connections.
-            await dispatch_events(events)
+            await run_pass(session_factory, batch_size)
         except Exception:  # a failed pass must not kill the loop
             logger.exception("overdue.pass failed")
 

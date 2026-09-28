@@ -1,7 +1,7 @@
 # PLAN — Task Management API
 
 Репозиторій: https://github.com/Cervin-van/task_menegement_api.git
-Статус: **усі етапи виконані** (147 тестів зелені, CI у GitHub Actions). Деталі для рев'юера — `README.md`.
+Статус: **усі етапи виконані** (175 тестів зелені, CI у GitHub Actions). Деталі для рев'юера — `README.md`.
 
 ## Узгоджені рішення по неоднозначностях ТЗ
 - Статуси: `backlog, todo, in_progress, review, done, cancelled` (Todo додано — фігурує в правилах ТЗ).
@@ -75,6 +75,7 @@ Docker Compose: `db` → `migrate` (one-shot) → `api` + `worker`; профіл
 | 11a | Фікси code review | `fix: review findings (no-key locks, whitespace, 500 format, jwt secret)` |
 | 11b | Тест реальної гонки | `test: real concurrency tests for assignee limit and row locks` |
 | 11c | CI | `ci: github actions for lint, tests and docker build` |
+| 13 | Третє коло рев'ю: межі вводу (NUL, page, рік, strict id), дедлайн лише автор, батчі воркера, таймаути БД, ліміт argon2, scope сесії | `fix: third review round (input bounds, deadline ownership, worker batches, db timeouts)` |
 | 12 | Фікси після рев'ю субагентами (QA, code review, архітектура) | `fix: second review round (id bounds, review without assignee, indexes, worker notifications)` |
 
 ## Верифікація

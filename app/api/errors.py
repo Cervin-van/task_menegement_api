@@ -5,6 +5,7 @@ from fastapi import FastAPI, Request, status
 from fastapi.encoders import jsonable_encoder
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse
+from sqlalchemy.exc import DBAPIError
 from starlette.exceptions import HTTPException as StarletteHTTPException
 
 from app.core.exceptions import DomainError
@@ -46,6 +47,28 @@ async def http_error_handler(request: Request, exc: StarletteHTTPException) -> J
     )
 
 
+# SQLSTATE -> (HTTP status, code, message). Class 22 = invalid data that slipped past validation.
+_QUERY_CANCELED = "57014"
+_LOCK_NOT_AVAILABLE = "55P03"
+
+
+async def db_error_handler(request: Request, exc: DBAPIError) -> JSONResponse:
+    sqlstate = getattr(exc.orig, "sqlstate", None) or getattr(exc.orig, "pgcode", None) or ""
+    if sqlstate in (_QUERY_CANCELED, _LOCK_NOT_AVAILABLE):
+        logger.warning("DB timeout on %s %s: %s", request.method, request.url.path, sqlstate)
+        return error_response(
+            status.HTTP_503_SERVICE_UNAVAILABLE,
+            "DB_TIMEOUT",
+            "The request took too long, try again",
+            headers={"Retry-After": "1"},
+        )
+    if sqlstate.startswith("22"):
+        return error_response(
+            status.HTTP_422_UNPROCESSABLE_CONTENT, "INVALID_DATA", "Invalid data for storage"
+        )
+    return await unhandled_error_handler(request, exc)
+
+
 async def unhandled_error_handler(request: Request, exc: Exception) -> JSONResponse:
     # Same envelope as other errors; internals go to logs only.
     logger.exception("Unhandled error on %s %s", request.method, request.url.path)
@@ -58,4 +81,5 @@ def register_error_handlers(app: FastAPI) -> None:
     app.add_exception_handler(DomainError, domain_error_handler)  # type: ignore[arg-type]
     app.add_exception_handler(RequestValidationError, validation_error_handler)  # type: ignore[arg-type]
     app.add_exception_handler(StarletteHTTPException, http_error_handler)  # type: ignore[arg-type]
+    app.add_exception_handler(DBAPIError, db_error_handler)  # type: ignore[arg-type]
     app.add_exception_handler(Exception, unhandled_error_handler)

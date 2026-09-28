@@ -47,6 +47,8 @@ jobs:
           enable-cache: true
       - run: uv sync --frozen
       - run: uv run pytest -q
+      # Models and migrations must not drift (DB is at head after the test session).
+      - run: uv run alembic check
 
   docker:
     runs-on: ubuntu-latest

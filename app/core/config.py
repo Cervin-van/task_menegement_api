@@ -16,6 +16,10 @@ class Settings(BaseSettings):
     db_pool_size: int = 10
     db_max_overflow: int = 10
     db_pool_timeout: int = 30
+    # Server-side guards: a stuck query/lock/transaction can't hold connections forever.
+    db_statement_timeout_ms: int = 5_000
+    db_lock_timeout_ms: int = 3_000
+    db_idle_in_transaction_timeout_ms: int = 30_000
 
     # Required, no insecure default: app fails fast on start without a proper secret.
     jwt_secret_key: str = Field(min_length=32)
@@ -24,6 +28,7 @@ class Settings(BaseSettings):
     refresh_token_expire_days: int = 7
 
     overdue_check_interval_seconds: int = 60
+    overdue_batch_size: int = 500
 
 
 @lru_cache

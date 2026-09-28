@@ -1,4 +1,7 @@
-from anyio import to_thread
+import os
+from collections.abc import Callable
+
+from anyio import CapacityLimiter, to_thread
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -18,6 +21,20 @@ from app.schemas.auth import TokenPair, UserCreate
 # Verified when the email is unknown so response time doesn't reveal registered emails.
 _DUMMY_HASH = hash_password("dummy-password-for-timing")
 
+_hash_limiter: CapacityLimiter | None = None
+
+
+async def _run_hashing[*Ts, R](func: Callable[[*Ts], R], *args: *Ts) -> R:
+    """argon2 is CPU- and memory-heavy (64 MiB per hash): run in threads, at most one per CPU.
+
+    The default anyio pool (40 threads) would allow ~2.5 GiB per process under a login burst.
+    Created lazily: a CapacityLimiter needs a running event loop.
+    """
+    global _hash_limiter
+    if _hash_limiter is None:
+        _hash_limiter = CapacityLimiter(os.cpu_count() or 1)
+    return await to_thread.run_sync(func, *args, limiter=_hash_limiter)
+
 
 class AuthService:
     def __init__(self, session: AsyncSession) -> None:
@@ -29,8 +46,7 @@ class AuthService:
         if await self.users.get_by_email(email):
             raise self._email_taken(email)
 
-        # argon2 is CPU-bound (~tens of ms): run in a thread, don't block the event loop.
-        hashed = await to_thread.run_sync(hash_password, data.password)
+        hashed = await _run_hashing(hash_password, data.password)
         user = User(email=email, full_name=data.full_name, hashed_password=hashed)
         try:
             await self.users.add(user)
@@ -43,7 +59,7 @@ class AuthService:
     async def login(self, email: str, password: str) -> TokenPair:
         user = await self.users.get_by_email(email.lower())
         hashed = user.hashed_password if user is not None else _DUMMY_HASH
-        valid = await to_thread.run_sync(verify_password, password, hashed)
+        valid = await _run_hashing(verify_password, password, hashed)
         if user is None or not valid:
             raise self._invalid_credentials()
         return self._issue_tokens(user.id)

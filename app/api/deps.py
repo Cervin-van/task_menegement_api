@@ -11,7 +11,9 @@ from app.services.auth import AuthService
 from app.services.comment import CommentService
 from app.services.task import TaskService
 
-SessionDep = Annotated[AsyncSession, Depends(get_session)]
+# scope="function": the session (and its pooled connection) is closed right after the endpoint
+# returns, not after the response is sent and background tasks (notifications) have run.
+SessionDep = Annotated[AsyncSession, Depends(get_session, scope="function")]
 
 # auto_error=False: missing token is reported in our unified error format.
 oauth2_scheme = OAuth2PasswordBearer(tokenUrl="/api/v1/auth/login", auto_error=False)

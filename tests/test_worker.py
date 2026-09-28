@@ -11,7 +11,7 @@ from sqlalchemy.ext.asyncio import AsyncEngine, AsyncSession
 
 from app.domain.status import TaskStatus
 from app.models import Task
-from app.workers.overdue import ADVISORY_LOCK_KEY, cancel_overdue, run_worker
+from app.workers.overdue import ADVISORY_LOCK_KEY, cancel_overdue, run_pass, run_worker
 from tests.conftest import UserFactory
 
 NOW = datetime.now(UTC)
@@ -49,10 +49,11 @@ async def test_cancels_unfinished_overdue_task(
 
     events = await cancel_overdue(session, NOW)
 
-    assert [e.task_id for e in events] == [task_id]
-    assert events[0].old_status is status
-    assert events[0].new_status is TaskStatus.CANCELLED
-    assert events[0].recipients == (author["email"],)
+    # Filter by own id: rows committed by other tests must not make this flaky.
+    (event,) = [e for e in events if e.task_id == task_id]
+    assert event.old_status is status
+    assert event.new_status is TaskStatus.CANCELLED
+    assert event.recipients == (author["email"],)
     assert await status_of(session, task_id) is TaskStatus.CANCELLED
 
 
@@ -66,7 +67,9 @@ async def test_leaves_other_tasks_untouched(session: AsyncSession, author: dict[
         await seed(session, author["id"], status=TaskStatus.TODO): TaskStatus.TODO,
     }
 
-    assert await cancel_overdue(session, NOW) == []
+    events = await cancel_overdue(session, NOW)
+
+    assert not {e.task_id for e in events} & untouched.keys()
     for task_id, status in untouched.items():
         assert await status_of(session, task_id) is status
 
@@ -137,3 +140,21 @@ async def test_notifies_author_and_assignee(
             f"task_id={task_id}" in m and email in m and "in_progress->cancelled" in m
             for m in messages
         )
+
+
+async def test_run_pass_processes_all_batches(
+    session: AsyncSession, author: dict[str, Any]
+) -> None:
+    ids = [
+        await seed(session, author["id"], status=TaskStatus.TODO, deadline=PAST) for _ in range(5)
+    ]
+
+    @asynccontextmanager
+    async def session_factory() -> AsyncIterator[AsyncSession]:
+        yield session
+
+    cancelled = await run_pass(session_factory, batch_size=2)  # 2 + 2 + 1
+
+    assert cancelled >= 5
+    for task_id in ids:
+        assert await status_of(session, task_id) is TaskStatus.CANCELLED

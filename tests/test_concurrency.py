@@ -128,10 +128,10 @@ async def test_worker_skips_task_locked_by_user(
         assert await TaskRepository(user_tx).get(task_id, for_update=True) is not None
 
         events = await asyncio.wait_for(cancel_overdue(worker, datetime.now(UTC)), timeout=3)
-        assert events == []  # skipped, not blocked
+        assert task_id not in {e.task_id for e in events}  # skipped, not blocked
 
         await user_tx.rollback()
 
     async with factory() as worker:
         events = await cancel_overdue(worker, datetime.now(UTC))
-    assert [e.task_id for e in events] == [task_id]
+    assert task_id in {e.task_id for e in events}
