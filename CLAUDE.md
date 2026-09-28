@@ -18,7 +18,7 @@
 - Статуси: `backlog, todo, in_progress, review, done, cancelled` (Todo додано, бо фігурує в правилах ТЗ).
 - Ліміт 10 активних задач (todo/in_progress/review) — для **виконавця**.
 - Права: редагувати/міняти статус — автор або виконавець; видаляти — тільки автор; інакше 403.
-- Періодична задача — asyncio-loop у `lifespan` + Postgres advisory lock; FastAPI `BackgroundTasks` — нотифікації (лог).
+- Періодична задача — окремий контейнер `worker` (той самий образ, asyncio-loop) + Postgres advisory lock; FastAPI `BackgroundTasks` — нотифікації (лог).
 - Автоскасування прострочених воркером — системний перехід з будь-якого нефінального статусу.
 
 ## Стек
@@ -38,11 +38,18 @@ PyJWT, pwdlib[argon2], PostgreSQL 16, Docker Compose, uv, ruff, pytest + pytest-
 - Схема БД змінюється тільки через Alembic (`create_all` — лише в тестах, якщо треба).
 - Кожне бізнес-правило покрите тестом.
 
+## Масштабування
+- API stateless (JWT, без in-memory стану) → горизонтально: репліки + `UVICORN_WORKERS`.
+- Міграції — one-shot сервіс `migrate`, не в entrypoint кожної репліки API.
+- Воркер — окремий сервіс, не в lifespan API (інакше дублюється на кожну репліку); advisory lock — страховка.
+- Пул БД налаштовується env (`DB_POOL_SIZE`, `DB_MAX_OVERFLOW`); сумарно ≤ `max_connections` Postgres.
+- Важкі запити (список, stats, overdue) — тільки через індекси, агрегати в SQL, пагінація обов'язкова.
+
 ## Команди
 ```bash
-docker compose up --build                                   # запуск (міграції застосовуються в entrypoint)
-docker compose exec api alembic upgrade head
+cp .env.example .env
+docker compose up --build                                   # db → migrate → api + worker
 docker compose exec api alembic revision --autogenerate -m "msg"
-docker compose run --rm api pytest -q
-ruff check . && ruff format .
+docker compose --profile test run --rm tests       # тести проти окремого db_test
+uv sync && uv run ruff check .                              # локально
 ```

@@ -6,12 +6,13 @@
 - Статуси: `backlog, todo, in_progress, review, done, cancelled` (Todo додано).
 - Ліміт 10 активних задач — для виконавця.
 - Права: редагувати/статус — автор або виконавець; видаляти — тільки автор.
-- Періодична задача — asyncio-loop у lifespan + advisory lock; BackgroundTasks — нотифікації.
+- Періодична задача — окремий контейнер `worker` + advisory lock; BackgroundTasks — нотифікації.
+- Масштабування: stateless API (репліки + UVICORN_WORKERS), one-shot `migrate`, окремий `worker`, пул БД через env.
 
 ## Архітектура
 ```
 app/
-  main.py                 # create_app(), lifespan (старт/стоп overdue-worker), exception handlers
+  main.py                 # create_app(), lifespan (dispose engine), exception handlers
   core/config.py          # Settings (pydantic-settings, .env)
   core/security.py        # hash/verify (argon2), encode/decode JWT (access + refresh)
   core/exceptions.py      # DomainError -> NotFound/Forbidden/Conflict/BusinessRuleViolation(code, message)
@@ -61,12 +62,12 @@ Dockerfile, docker-compose.yml, .env.example, pyproject.toml, README.md
 - `/tasks/overdue` і `/tasks/stats` оголошуються **перед** `/tasks/{id}`.
 
 ## Background
-- `workers/overdue.py`: `while True: await cancel_overdue(); await asyncio.sleep(settings.OVERDUE_CHECK_INTERVAL)`; всередині `pg_try_advisory_xact_lock(key)` → один bulk `UPDATE tasks SET status='cancelled' WHERE deadline < now() AND status NOT IN (...) RETURNING id`, лог кількості. Старт/cancel у `lifespan`, вимикається флагом `ENABLE_OVERDUE_WORKER` (off у тестах; `cancel_overdue()` тестується напряму).
+- `workers/overdue.py`: `while True: await cancel_overdue(); await asyncio.sleep(settings.OVERDUE_CHECK_INTERVAL)`; всередині `pg_try_advisory_xact_lock(key)` → один bulk `UPDATE tasks SET status='cancelled' WHERE deadline < now() AND status NOT IN (...) RETURNING id`, лог кількості. Запуск: `python -m app.workers.overdue` в окремому сервісі `worker` (graceful shutdown по SIGTERM); `cancel_overdue()` тестується напряму.
 - FastAPI `BackgroundTasks`: після зміни статусу/призначення — `notify_assignee(...)` (лог; точка розширення під email).
 
 ## Docker
 - `Dockerfile` multi-stage на uv, non-root user.
-- `docker-compose.yml`: `db` (postgres:16, healthcheck `pg_isready`, volume), `api` (depends_on: service_healthy; entrypoint: `alembic upgrade head && uvicorn`), `db_test` (tmpfs) для pytest.
+- `docker-compose.yml`: `db` (postgres:16, healthcheck `pg_isready`, volume), `migrate` (one-shot `alembic upgrade head`), `api` (depends_on: migrate completed_successfully), `worker`, профіль `test`: `db_test` (tmpfs) + `tests`.
 
 ## Плюси (в межах ТЗ)
 1. Чисте шарування router/service/repository + доменні винятки з кодами помилок.
@@ -94,6 +95,6 @@ Dockerfile, docker-compose.yml, .env.example, pyproject.toml, README.md
 
 ## Верифікація
 - `docker compose up --build` → API на `:8000`, міграції застосовуються автоматично, Swagger `/docs` з Authorize.
-- `docker compose run --rm api pytest -q` — усі зелені (auth, CRUD, матриця переходів, done-без-assignee, прострочений done, ліміт 10, заборони редагування/видалення, фільтри+дефолтне сортування, overdue, stats, worker).
+- `docker compose --profile test run --rm tests` — усі зелені (auth, CRUD, матриця переходів, done-без-assignee, прострочений done, ліміт 10, заборони редагування/видалення, фільтри+дефолтне сортування, overdue, stats, worker).
 - Ручний smoke у Swagger: register → login → створити задачу → пройти backlog→…→done → коментар → stats.
 - `ruff check .` без помилок.
