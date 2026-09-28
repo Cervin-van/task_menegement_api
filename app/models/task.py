@@ -38,6 +38,10 @@ class Task(TimestampMixin, Base):
     author: Mapped[User] = relationship(foreign_keys=[author_id], lazy="raise")
     assignee: Mapped[User | None] = relationship(foreign_keys=[assignee_id], lazy="raise")
 
+    # RETURNING server-generated created_at/updated_at on INSERT and UPDATE:
+    # no expired attributes -> no implicit lazy IO in async code.
+    __mapper_args__ = {"eager_defaults": True}  # noqa: RUF012
+
     __table_args__ = (
         # ILIKE '%q%' search on title/description.
         Index(

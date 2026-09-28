@@ -2,6 +2,7 @@ import asyncio
 import os
 import uuid
 from collections.abc import AsyncIterator, Awaitable, Callable
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any
 
@@ -15,12 +16,15 @@ import pytest
 from alembic import command
 from alembic.config import Config
 from httpx import ASGITransport, AsyncClient
+from sqlalchemy import update
 from sqlalchemy.ext.asyncio import AsyncEngine, AsyncSession, create_async_engine
 from sqlalchemy.pool import NullPool
 
 from app.core.config import settings
 from app.db.session import get_session
+from app.domain.status import TaskStatus
 from app.main import app
+from app.models import Task
 
 ROOT = Path(__file__).resolve().parents[1]
 DEFAULT_PASSWORD = "Str0ngPassw0rd!"
@@ -96,3 +100,34 @@ def create_user(client: AsyncClient) -> UserFactory:
         }
 
     return factory
+
+
+TaskFactory = Callable[..., Awaitable[dict[str, Any]]]
+
+
+@pytest.fixture
+def create_task(client: AsyncClient) -> TaskFactory:
+    """Creates a task via API on behalf of `owner` (a user dict from create_user)."""
+
+    async def factory(owner: dict[str, Any], **fields: Any) -> dict[str, Any]:
+        payload = {"title": "Task", **fields}
+        resp = await client.post("/api/v1/tasks", json=payload, headers=owner["headers"])
+        assert resp.status_code == 201, resp.text
+        return resp.json()
+
+    return factory
+
+
+@pytest.fixture
+def set_status(session: AsyncSession) -> Callable[[int, TaskStatus], Awaitable[None]]:
+    """Moves a task to any status directly in DB (bypasses state machine) for test setup."""
+
+    async def setter(task_id: int, status: TaskStatus) -> None:
+        await session.execute(update(Task).where(Task.id == task_id).values(status=status))
+        await session.flush()
+
+    return setter
+
+
+def future(days: int = 1) -> str:
+    return (datetime.now(UTC) + timedelta(days=days)).isoformat()

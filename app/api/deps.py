@@ -8,6 +8,7 @@ from app.core.exceptions import AuthenticationError
 from app.db.session import get_session
 from app.models import User
 from app.services.auth import AuthService
+from app.services.task import TaskService
 
 SessionDep = Annotated[AsyncSession, Depends(get_session)]
 
@@ -31,3 +32,10 @@ async def get_current_user(
 
 
 CurrentUser = Annotated[User, Depends(get_current_user)]
+
+
+def get_task_service(session: SessionDep) -> TaskService:
+    return TaskService(session)
+
+
+TaskServiceDep = Annotated[TaskService, Depends(get_task_service)]
