@@ -7,6 +7,7 @@ from app.api.errors import register_error_handlers
 from app.api.health import router as health_router
 from app.api.v1.router import api_router
 from app.core.config import settings
+from app.core.logging import setup_logging
 from app.db.session import engine
 
 
@@ -17,6 +18,7 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
 
 
 def create_app() -> FastAPI:
+    setup_logging()
     app = FastAPI(title=settings.app_name, lifespan=lifespan)
     register_error_handlers(app)
     app.include_router(health_router)

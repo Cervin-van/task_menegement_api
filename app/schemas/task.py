@@ -43,6 +43,10 @@ class TaskUpdate(BaseModel):
         return self
 
 
+class TaskStatusUpdate(BaseModel):
+    status: TaskStatus
+
+
 class TaskRead(BaseModel):
     model_config = ConfigDict(from_attributes=True)
 

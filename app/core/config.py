@@ -8,6 +8,7 @@ class Settings(BaseSettings):
 
     app_name: str = "Task Management API"
     debug: bool = False
+    log_level: str = "INFO"
 
     database_url: str = "postgresql+asyncpg://postgres:postgres@localhost:5432/tasks"
     # Per-process pool: total connections = replicas * workers * (pool_size + max_overflow).

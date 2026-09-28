@@ -8,13 +8,16 @@ from app.core.exceptions import (
     NotFoundError,
     PermissionDeniedError,
 )
+from app.domain.events import DomainEvent, TaskAssigned, TaskStatusChanged
 from app.domain.status import (
     ACTIVE_STATUSES,
+    ALLOWED_TRANSITIONS,
     ASSIGNEE_LOCKED_STATUSES,
     FINAL_STATUSES,
     MAX_ACTIVE_TASKS_PER_ASSIGNEE,
     UNDELETABLE_STATUSES,
     TaskStatus,
+    can_transition,
 )
 from app.models import Task, User
 from app.repositories.task import TaskRepository
@@ -27,6 +30,12 @@ class TaskService:
         self.session = session
         self.tasks = TaskRepository(session)
         self.users = UserRepository(session)
+        # Collected after successful commit; dispatched by the API layer in background.
+        self.events: list[DomainEvent] = []
+
+    def pop_events(self) -> list[DomainEvent]:
+        events, self.events = self.events, []
+        return events
 
     async def create(self, data: TaskCreate, author: User) -> Task:
         self._ensure_deadline_not_past(data.deadline)
@@ -41,7 +50,9 @@ class TaskService:
         )
         await self.tasks.add(task)
         await self.session.commit()
-        return await self.get(task.id)
+        task = await self.get(task.id)
+        self._record_assignment(task, actor=author)
+        return task
 
     async def get(self, task_id: int) -> Task:
         task = await self.tasks.get(task_id)
@@ -52,16 +63,12 @@ class TaskService:
     async def update(self, task_id: int, data: TaskUpdate, user: User) -> Task:
         task = await self._get_for_update(task_id)
         self._ensure_can_edit(task, user)
-        if task.status in FINAL_STATUSES:
-            raise BusinessRuleError(
-                f"Task in status '{task.status}' cannot be edited",
-                code="TASK_NOT_EDITABLE",
-                details={"status": task.status},
-            )
+        self._ensure_not_final(task)
 
         changes = data.model_dump(exclude_unset=True)
+        assignee_changed = "assignee_id" in changes and changes["assignee_id"] != task.assignee_id
 
-        if "assignee_id" in changes and changes["assignee_id"] != task.assignee_id:
+        if assignee_changed:
             if task.status in ASSIGNEE_LOCKED_STATUSES:
                 raise BusinessRuleError(
                     f"Assignee cannot be changed in status '{task.status}'",
@@ -77,7 +84,64 @@ class TaskService:
         for field, value in changes.items():
             setattr(task, field, value)
         await self.session.commit()
-        return await self.get(task_id)
+        task = await self.get(task_id)
+        if assignee_changed:
+            self._record_assignment(task, actor=user)
+        return task
+
+    async def change_status(self, task_id: int, target: TaskStatus, user: User) -> Task:
+        task = await self._get_for_update(task_id)
+        self._ensure_can_edit(task, user)
+        self._ensure_not_final(task)
+
+        current = task.status
+        if not can_transition(current, target):
+            raise BusinessRuleError(
+                f"Transition '{current}' -> '{target}' is not allowed",
+                code="INVALID_STATUS_TRANSITION",
+                details={
+                    "from": current,
+                    "to": target,
+                    "allowed": sorted(ALLOWED_TRANSITIONS[current]),
+                },
+            )
+
+        if target is TaskStatus.DONE:
+            if task.assignee_id is None:
+                raise BusinessRuleError(
+                    "Task cannot be done without an assignee", code="DONE_REQUIRES_ASSIGNEE"
+                )
+            if task.deadline is not None and task.deadline < datetime.now(UTC):
+                raise BusinessRuleError(
+                    "Task cannot be done after its deadline has passed",
+                    code="DONE_AFTER_DEADLINE",
+                    details={"deadline": task.deadline},
+                )
+
+        # Entering the active set (backlog -> todo) consumes a slot of the assignee's limit.
+        if (
+            target in ACTIVE_STATUSES
+            and current not in ACTIVE_STATUSES
+            and task.assignee_id is not None
+        ):
+            await self._ensure_assignee_capacity(task.assignee_id, task, target)
+
+        task.status = target
+        await self.session.commit()
+        task = await self.get(task_id)
+
+        recipients = self._recipients(task, actor=user)
+        if recipients:
+            self.events.append(
+                TaskStatusChanged(
+                    task_id=task.id,
+                    title=task.title,
+                    old_status=current,
+                    new_status=target,
+                    recipients=recipients,
+                )
+            )
+        return task
 
     async def delete(self, task_id: int, user: User) -> None:
         task = await self._get_for_update(task_id)
@@ -126,6 +190,28 @@ class TaskService:
                 f"Assignee already has {MAX_ACTIVE_TASKS_PER_ASSIGNEE} active tasks",
                 code="ASSIGNEE_TASK_LIMIT_EXCEEDED",
                 details={"assignee_id": assignee_id, "limit": MAX_ACTIVE_TASKS_PER_ASSIGNEE},
+            )
+
+    def _record_assignment(self, task: Task, actor: User) -> None:
+        if task.assignee is not None and task.assignee.id != actor.id:
+            self.events.append(
+                TaskAssigned(task_id=task.id, title=task.title, assignee_email=task.assignee.email)
+            )
+
+    @staticmethod
+    def _recipients(task: Task, actor: User) -> tuple[str, ...]:
+        """Author and assignee, except whoever made the change."""
+        people = [task.author, task.assignee]
+        emails = {p.email for p in people if p is not None and p.id != actor.id}
+        return tuple(sorted(emails))
+
+    @staticmethod
+    def _ensure_not_final(task: Task) -> None:
+        if task.status in FINAL_STATUSES:
+            raise BusinessRuleError(
+                f"Task in status '{task.status}' cannot be edited",
+                code="TASK_NOT_EDITABLE",
+                details={"status": task.status},
             )
 
     @staticmethod
