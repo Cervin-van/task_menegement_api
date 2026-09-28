@@ -1,9 +1,23 @@
-from sqlalchemy import func, select
+from collections.abc import Sequence
+
+from sqlalchemy import ColumnElement, UnaryExpression, func, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
 from app.domain.status import ACTIVE_STATUSES
 from app.models import Task
+from app.schemas.task import SortOrder, TaskListQuery, TaskSortField
+
+_SORT_COLUMNS = {
+    TaskSortField.CREATED_AT: Task.created_at,
+    TaskSortField.DEADLINE: Task.deadline,
+    TaskSortField.PRIORITY: Task.priority,
+}
+_DEFAULT_SORT_ORDER = {
+    TaskSortField.CREATED_AT: SortOrder.DESC,  # newest first
+    TaskSortField.DEADLINE: SortOrder.ASC,  # nearest first
+    TaskSortField.PRIORITY: SortOrder.DESC,  # high first
+}
 
 
 class TaskRepository:
@@ -40,3 +54,54 @@ class TaskRepository:
         if exclude_task_id is not None:
             stmt = stmt.where(Task.id != exclude_task_id)
         return await self.session.scalar(stmt) or 0
+
+    async def list_tasks(self, query: TaskListQuery) -> tuple[Sequence[Task], int]:
+        conditions = self._filters(query)
+
+        total = await self.session.scalar(select(func.count()).select_from(Task).where(*conditions))
+        items = await self.session.scalars(
+            select(Task)
+            .where(*conditions)
+            .options(selectinload(Task.author), selectinload(Task.assignee))
+            .order_by(*self._ordering(query))
+            .offset(query.offset)
+            .limit(query.size)
+        )
+        return items.all(), total or 0
+
+    @staticmethod
+    def _filters(query: TaskListQuery) -> list[ColumnElement[bool]]:
+        conditions: list[ColumnElement[bool]] = []
+        if query.search:
+            # Escape LIKE wildcards: user input "%" must match a literal percent sign.
+            escaped = query.search.replace("\\", "\\\\").replace("%", r"\%").replace("_", r"\_")
+            pattern = f"%{escaped}%"
+            conditions.append(
+                or_(
+                    Task.title.ilike(pattern, escape="\\"),
+                    Task.description.ilike(pattern, escape="\\"),
+                )
+            )
+        if query.status:
+            conditions.append(Task.status.in_(query.status))
+        if query.priority:
+            conditions.append(Task.priority.in_(query.priority))
+        if query.assignee_id is not None:
+            conditions.append(Task.assignee_id == query.assignee_id)
+        if query.deadline_from is not None:
+            conditions.append(Task.deadline >= query.deadline_from)
+        if query.deadline_to is not None:
+            conditions.append(Task.deadline <= query.deadline_to)
+        return conditions
+
+    @staticmethod
+    def _ordering(query: TaskListQuery) -> list[UnaryExpression[object]]:
+        if query.sort_by is None:
+            # Matches ix_tasks_priority_deadline.
+            return [Task.priority.desc(), Task.deadline.asc().nulls_last(), Task.id.asc()]
+
+        column = _SORT_COLUMNS[query.sort_by]
+        order = query.order or _DEFAULT_SORT_ORDER[query.sort_by]
+        primary = column.asc() if order is SortOrder.ASC else column.desc()
+        # Tasks without deadline go last in both directions; id makes pagination stable.
+        return [primary.nulls_last(), Task.id.asc()]

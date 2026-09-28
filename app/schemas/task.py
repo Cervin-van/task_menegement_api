@@ -1,9 +1,11 @@
 from datetime import datetime
+from enum import StrEnum
 from typing import Self
 
 from pydantic import AwareDatetime, BaseModel, ConfigDict, Field, model_validator
 
 from app.domain.status import TaskPriority, TaskStatus
+from app.schemas.common import PageParams
 
 
 class UserShort(BaseModel):
@@ -60,3 +62,35 @@ class TaskRead(BaseModel):
     deadline: datetime | None
     created_at: datetime
     updated_at: datetime
+
+
+class TaskSortField(StrEnum):
+    CREATED_AT = "created_at"
+    DEADLINE = "deadline"
+    PRIORITY = "priority"
+
+
+class SortOrder(StrEnum):
+    ASC = "asc"
+    DESC = "desc"
+
+
+class TaskListQuery(PageParams):
+    """Query params of GET /tasks. Without sort_by: priority high->low, then nearest deadline."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    search: str | None = Field(default=None, min_length=1, max_length=100)
+    status: list[TaskStatus] = Field(default_factory=list)
+    priority: list[TaskPriority] = Field(default_factory=list)
+    assignee_id: int | None = None
+    deadline_from: AwareDatetime | None = None
+    deadline_to: AwareDatetime | None = None
+    sort_by: TaskSortField | None = None
+    order: SortOrder | None = None
+
+    @model_validator(mode="after")
+    def _deadline_range(self) -> Self:
+        if self.deadline_from and self.deadline_to and self.deadline_from > self.deadline_to:
+            raise ValueError("deadline_from must be <= deadline_to")
+        return self

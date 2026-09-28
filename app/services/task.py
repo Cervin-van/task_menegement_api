@@ -1,3 +1,4 @@
+from collections.abc import Sequence
 from datetime import UTC, datetime
 
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -22,7 +23,7 @@ from app.domain.status import (
 from app.models import Task, User
 from app.repositories.task import TaskRepository
 from app.repositories.user import UserRepository
-from app.schemas.task import TaskCreate, TaskUpdate
+from app.schemas.task import TaskCreate, TaskListQuery, TaskUpdate
 
 
 class TaskService:
@@ -59,6 +60,9 @@ class TaskService:
         if task is None:
             raise self._not_found(task_id)
         return task
+
+    async def list_tasks(self, query: TaskListQuery) -> tuple[Sequence[Task], int]:
+        return await self.tasks.list_tasks(query)
 
     async def update(self, task_id: int, data: TaskUpdate, user: User) -> Task:
         task = await self._get_for_update(task_id)

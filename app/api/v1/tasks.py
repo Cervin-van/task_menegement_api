@@ -1,8 +1,11 @@
-from fastapi import APIRouter, BackgroundTasks, Response, status
+from typing import Annotated
+
+from fastapi import APIRouter, BackgroundTasks, Query, Response, status
 
 from app.api.deps import CurrentUser, TaskServiceDep
 from app.notifications import dispatch_events
-from app.schemas.task import TaskCreate, TaskRead, TaskStatusUpdate, TaskUpdate
+from app.schemas.common import Page
+from app.schemas.task import TaskCreate, TaskListQuery, TaskRead, TaskStatusUpdate, TaskUpdate
 
 router = APIRouter(prefix="/tasks", tags=["tasks"])
 
@@ -14,6 +17,14 @@ async def create_task(
     task = await service.create(data, user)
     background.add_task(dispatch_events, service.pop_events())
     return TaskRead.model_validate(task)
+
+
+@router.get("")
+async def list_tasks(
+    query: Annotated[TaskListQuery, Query()], _: CurrentUser, service: TaskServiceDep
+) -> Page[TaskRead]:
+    items, total = await service.list_tasks(query)
+    return Page[TaskRead].build(items, total, query)
 
 
 @router.get("/{task_id}")
