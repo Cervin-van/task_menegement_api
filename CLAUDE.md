@@ -35,7 +35,8 @@ PyJWT, pwdlib[argon2], PostgreSQL 16, Docker Compose, uv, ruff, pytest + pytest-
 - Всі datetime — tz-aware UTC, у БД `timestamptz`.
 - Priority зберігається як smallint (1 low / 2 medium / 3 high).
 - Статусні переходи — тільки через `ALLOWED_TRANSITIONS` у `domain/status.py`.
-- Схема БД змінюється тільки через Alembic (`create_all` — лише в тестах, якщо треба).
+- Схема БД змінюється тільки через Alembic (`create_all` — лише в тестах, якщо треба). Autogenerate завжди переглядати руками: extensions, drop enum у downgrade.
+- ORM relationships — `lazy="raise"`: завантаження тільки явно (`selectinload`/`joinedload`).
 - Кожне бізнес-правило покрите тестом.
 
 ## Масштабування
@@ -49,7 +50,9 @@ PyJWT, pwdlib[argon2], PostgreSQL 16, Docker Compose, uv, ruff, pytest + pytest-
 ```bash
 cp .env.example .env
 docker compose up --build                                   # db → migrate → api + worker
-docker compose exec api alembic revision --autogenerate -m "msg"
+# Нова міграція — локально (runtime-образ без ruff для post-write hook); БД з compose на 127.0.0.1:5440
+$env:DATABASE_URL="postgresql+asyncpg://postgres:postgres@localhost:5440/tasks"; uv run alembic revision --autogenerate -m "msg"
+uv run alembic check                                        # моделі == міграції
 docker compose --profile test run --rm tests       # тести проти окремого db_test
 uv sync && uv run ruff check .                              # локально
 ```

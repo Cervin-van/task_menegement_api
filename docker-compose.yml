@@ -1,4 +1,6 @@
+# One image for migrate/api (and worker later): built once, different commands.
 x-app: &app
+  image: task-manager-api:local
   build:
     context: .
     target: runtime
@@ -18,16 +20,27 @@ services:
     volumes:
       - pgdata:/var/lib/postgresql/data
     ports:
-      - "5432:5432"
+      - "127.0.0.1:${DB_HOST_PORT:-5440}:5432"
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U $${POSTGRES_USER} -d $${POSTGRES_DB}"]
       interval: 3s
       timeout: 3s
       retries: 10
 
+  # One-shot: migrations run once per deploy, not in every API replica.
+  migrate:
+    <<: *app
+    command: ["alembic", "upgrade", "head"]
+    restart: "no"
+
   api:
     <<: *app
     command: ["api"]
+    depends_on:
+      db:
+        condition: service_healthy
+      migrate:
+        condition: service_completed_successfully
     ports:
       - "8000:8000"
     healthcheck:
