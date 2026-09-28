@@ -17,13 +17,15 @@ from app.domain.status import (
     FINAL_STATUSES,
     MAX_ACTIVE_TASKS_PER_ASSIGNEE,
     UNDELETABLE_STATUSES,
+    TaskPriority,
     TaskStatus,
     can_transition,
 )
 from app.models import Task, User
 from app.repositories.task import TaskRepository
 from app.repositories.user import UserRepository
-from app.schemas.task import TaskCreate, TaskListQuery, TaskUpdate
+from app.schemas.common import PageParams
+from app.schemas.task import TaskCreate, TaskListQuery, TaskStats, TaskUpdate
 
 
 class TaskService:
@@ -63,6 +65,19 @@ class TaskService:
 
     async def list_tasks(self, query: TaskListQuery) -> tuple[Sequence[Task], int]:
         return await self.tasks.list_tasks(query)
+
+    async def list_overdue(self, params: PageParams) -> tuple[Sequence[Task], int]:
+        return await self.tasks.list_overdue(datetime.now(UTC), params)
+
+    async def stats(self) -> TaskStats:
+        row = await self.tasks.stats(datetime.now(UTC))
+        return TaskStats(
+            total=row["total"],
+            by_status={s: row[f"status_{s}"] for s in TaskStatus},
+            by_priority={p: row[f"priority_{p}"] for p in TaskPriority},
+            overdue=row["overdue"],
+            active=row["active"],
+        )
 
     async def update(self, task_id: int, data: TaskUpdate, user: User) -> Task:
         task = await self._get_for_update(task_id)

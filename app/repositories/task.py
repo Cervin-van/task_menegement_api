@@ -1,11 +1,13 @@
 from collections.abc import Sequence
+from datetime import datetime
 
-from sqlalchemy import ColumnElement, UnaryExpression, func, or_, select
+from sqlalchemy import ColumnElement, RowMapping, UnaryExpression, and_, func, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
-from app.domain.status import ACTIVE_STATUSES
+from app.domain.status import ACTIVE_STATUSES, FINAL_STATUSES, TaskPriority, TaskStatus
 from app.models import Task
+from app.schemas.common import PageParams
 from app.schemas.task import SortOrder, TaskListQuery, TaskSortField
 
 _SORT_COLUMNS = {
@@ -18,6 +20,14 @@ _DEFAULT_SORT_ORDER = {
     TaskSortField.DEADLINE: SortOrder.ASC,  # nearest first
     TaskSortField.PRIORITY: SortOrder.DESC,  # high first
 }
+
+
+def overdue_condition(now: datetime) -> ColumnElement[bool]:
+    """Single definition of "overdue": used by the endpoint, stats and the auto-cancel worker.
+
+    `now` comes from the app clock (not DB now()) to stay consistent with service checks.
+    """
+    return and_(Task.deadline < now, Task.status.not_in(FINAL_STATUSES))
 
 
 class TaskRepository:
@@ -110,3 +120,31 @@ class TaskRepository:
         primary = column.asc() if order is SortOrder.ASC else column.desc()
         # Tasks without deadline go last in both directions; id makes pagination stable.
         return [primary.nulls_last(), Task.id.asc()]
+
+    async def list_overdue(self, now: datetime, params: PageParams) -> tuple[Sequence[Task], int]:
+        condition = overdue_condition(now)
+        total = await self.session.scalar(select(func.count()).select_from(Task).where(condition))
+        items = await self.session.scalars(
+            select(Task)
+            .where(condition)
+            .options(selectinload(Task.author), selectinload(Task.assignee))
+            .order_by(Task.deadline.asc(), Task.id.asc())  # most overdue first
+            .offset(params.offset)
+            .limit(params.size)
+        )
+        return items.all(), total or 0
+
+    async def stats(self, now: datetime) -> RowMapping:
+        """All counters in ONE table scan: count(*) FILTER (WHERE ...) per metric.
+
+        Every status/priority gets its own column, so missing values come back as 0.
+        """
+        columns = [
+            func.count().label("total"),
+            func.count().filter(overdue_condition(now)).label("overdue"),
+            func.count().filter(Task.status.in_(ACTIVE_STATUSES)).label("active"),
+            *(func.count().filter(Task.status == s).label(f"status_{s}") for s in TaskStatus),
+            *(func.count().filter(Task.priority == p).label(f"priority_{p}") for p in TaskPriority),
+        ]
+        result = await self.session.execute(select(*columns).select_from(Task))
+        return result.mappings().one()

@@ -4,8 +4,15 @@ from fastapi import APIRouter, BackgroundTasks, Query, Response, status
 
 from app.api.deps import CurrentUser, TaskServiceDep
 from app.notifications import dispatch_events
-from app.schemas.common import Page
-from app.schemas.task import TaskCreate, TaskListQuery, TaskRead, TaskStatusUpdate, TaskUpdate
+from app.schemas.common import Page, PageParams
+from app.schemas.task import (
+    TaskCreate,
+    TaskListQuery,
+    TaskRead,
+    TaskStats,
+    TaskStatusUpdate,
+    TaskUpdate,
+)
 
 router = APIRouter(prefix="/tasks", tags=["tasks"])
 
@@ -25,6 +32,21 @@ async def list_tasks(
 ) -> Page[TaskRead]:
     items, total = await service.list_tasks(query)
     return Page[TaskRead].build(items, total, query)
+
+
+# Static paths must be declared before /{task_id}.
+@router.get("/overdue")
+async def list_overdue_tasks(
+    params: Annotated[PageParams, Query()], _: CurrentUser, service: TaskServiceDep
+) -> Page[TaskRead]:
+    """Deadline passed and status is not done/cancelled; most overdue first."""
+    items, total = await service.list_overdue(params)
+    return Page[TaskRead].build(items, total, params)
+
+
+@router.get("/stats")
+async def task_stats(_: CurrentUser, service: TaskServiceDep) -> TaskStats:
+    return await service.stats()
 
 
 @router.get("/{task_id}")

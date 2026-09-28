@@ -94,3 +94,11 @@ class TaskListQuery(PageParams):
         if self.deadline_from and self.deadline_to and self.deadline_from > self.deadline_to:
             raise ValueError("deadline_from must be <= deadline_to")
         return self
+
+
+class TaskStats(BaseModel):
+    total: int
+    by_status: dict[TaskStatus, int]
+    by_priority: dict[TaskPriority, int]
+    overdue: int
+    active: int
