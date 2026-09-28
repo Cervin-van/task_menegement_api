@@ -35,9 +35,17 @@ PyJWT, pwdlib[argon2], PostgreSQL 16, Docker Compose, uv, ruff, pytest + pytest-
 - Всі datetime — tz-aware UTC, у БД `timestamptz`.
 - Priority зберігається як smallint (1 low / 2 medium / 3 high).
 - Статусні переходи — тільки через `ALLOWED_TRANSITIONS` у `domain/status.py`.
-- Схема БД змінюється тільки через Alembic (`create_all` — лише в тестах, якщо треба). Autogenerate завжди переглядати руками: extensions, drop enum у downgrade.
+- Схема БД змінюється тільки через Alembic (тести теж ганяють міграції, не `create_all`). Autogenerate завжди переглядати руками: extensions, drop enum у downgrade.
 - ORM relationships — `lazy="raise"`: завантаження тільки явно (`selectinload`/`joinedload`).
 - Кожне бізнес-правило покрите тестом.
+- «Прострочена задача» визначається тільки через `overdue_condition(now)` (`repositories/task.py`); `now` — з Python, не `now()` БД.
+- Нотифікації — через доменні події (`domain/events.py`) → `service.pop_events()` → `BackgroundTasks`; сервіс не знає про доставку.
+- Не називати методи класів іменами builtins (`list`, `id`, ...) — ламає анотації в тілі класу.
+
+## Тести
+- Реальний Postgres (`db_test`, tmpfs), схема — `alembic downgrade base && upgrade head` на старті сесії.
+- Ізоляція: зовнішня транзакція на тест + `join_transaction_mode="create_savepoint"` → `commit` у сервісах = savepoint; **не робити `session.rollback()` у коді без потреби** — в тестах відкотить сід.
+- Час — `time_machine.travel`; дані для списків/сортування — сід напряму через `session`.
 
 ## Масштабування
 - API stateless (JWT, без in-memory стану) → горизонтально: репліки + `UVICORN_WORKERS`.
