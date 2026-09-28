@@ -1,5 +1,7 @@
 # Task Management API
 
+[![CI](https://github.com/Cervin-van/task_menegement_api/actions/workflows/ci.yml/badge.svg)](https://github.com/Cervin-van/task_menegement_api/actions/workflows/ci.yml)
+
 REST API для управління задачами: реєстрація/JWT, CRUD задач, виконавці, коментарі, стан-машина статусів,
 пошук/фільтри/сортування/пагінація, прострочені задачі, статистика і фоновий воркер автоскасування.
 
@@ -23,7 +25,7 @@ docker compose up --build
 ### Тести
 
 ```bash
-docker compose --profile test run --rm --build tests      # 122 тести проти окремого Postgres (tmpfs)
+docker compose --profile test run --rm --build tests      # 129 тестів проти окремого Postgres (tmpfs)
 ```
 
 Локально (Python 3.12+, [uv](https://docs.astral.sh/uv/)):
@@ -34,6 +36,8 @@ uv sync
 uv run pytest -q
 uv run ruff check . && uv run ruff format --check .
 ```
+
+CI (GitHub Actions, `.github/workflows/ci.yml`): `ruff` → `pytest` проти Postgres service → `docker build`.
 
 ---
 
@@ -159,8 +163,9 @@ workers/overdue.py ── advisory lock ── bulk UPDATE ... RETURNING
 
 - **Стан-машина як дані** — `ALLOWED_TRANSITIONS` у `app/domain/status.py`; тест перевіряє всі 36 пар переходів.
 - **Гонки.**
-  - Редагування і зміна статусу беруть задачу через `SELECT ... FOR UPDATE`.
-  - Ліміт 10 задач: спершу `FOR UPDATE` на рядок виконавця, потім `count`. Два паралельні призначення не проскочать ліміт.
+  - Редагування і зміна статусу беруть задачу через `SELECT ... FOR NO KEY UPDATE`.
+  - Ліміт 10 задач: спершу такий самий лок на рядок виконавця, потім `count`. Два паралельні призначення не проскочать ліміт — це перевіряє тест із реальними паралельними транзакціями.
+  - Саме `NO KEY`, а не `FOR UPDATE`: FK-перевірки при INSERT беруть `KEY SHARE` на батьківський рядок. З `FOR UPDATE` редагування задачі блокувало б додавання коментарів до неї, а призначення на користувача — створення ним нових задач.
   - Воркер і користувач: якщо користувач тримає лок і закриває задачу, `UPDATE` воркера чекає.
     Потім під READ COMMITTED він переперевіряє `WHERE` і не скасує вже завершену задачу.
 - **Воркер** (`app/workers/overdue.py`).
@@ -192,7 +197,10 @@ workers/overdue.py ── advisory lock ── bulk UPDATE ... RETURNING
   - Справжній Postgres, схема будується міграціями (`downgrade base → upgrade head`).
   - Кожен тест іде в транзакції з відкатом; `commit` у сервісах стає savepoint.
   - Час підміняється через `time-machine`.
-  - 122 тести, серед них повна матриця переходів статусів, гонка за advisory lock і graceful stop воркера.
+  - 129 тестів, серед них повна матриця переходів статусів, гонка за advisory lock, graceful stop воркера і реальна паралельна гонка за ліміт. Перевірено: без локів ці тести падають.
+- **Помилки.**
+  - Доменні винятки, валідація, HTTP-помилки і необроблені винятки віддаються в одному форматі; для 500 деталі йдуть тільки в лог.
+  - `JWT_SECRET_KEY` обов'язковий і не коротший за 32 символи — з небезпечним секретом застосунок не стартує.
 
 ### Структура
 

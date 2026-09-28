@@ -40,12 +40,16 @@ PyJWT, pwdlib[argon2], PostgreSQL 16, Docker Compose, uv, ruff, pytest + pytest-
 - Кожне бізнес-правило покрите тестом.
 - «Прострочена задача» визначається тільки через `overdue_condition(now)` (`repositories/task.py`); `now` — з Python, не `now()` БД.
 - Нотифікації — через доменні події (`domain/events.py`) → `service.pop_events()` → `BackgroundTasks`; сервіс не знає про доставку.
+- Row-локи — `with_for_update(key_share=True)` (`FOR NO KEY UPDATE`), не `FOR UPDATE`: інакше блокуються FK-вставки (коментарі, нові задачі).
+- `JWT_SECRET_KEY` обов'язковий (≥ 32 символи) — без `.env` застосунок/alembic не стартують.
 - Не називати методи класів іменами builtins (`list`, `id`, ...) — ламає анотації в тілі класу.
 
 ## Тести
 - Реальний Postgres (`db_test`, tmpfs), схема — `alembic downgrade base && upgrade head` на старті сесії.
 - Ізоляція: зовнішня транзакція на тест + `join_transaction_mode="create_savepoint"` → `commit` у сервісах = savepoint; **не робити `session.rollback()` у коді без потреби** — в тестах відкотить сід.
 - Час — `time_machine.travel`; дані для списків/сортування — сід напряму через `session`.
+- Реальна конкуренція — `tests/test_concurrency.py`: окремі сесії з реальними commit + прибирання; вікно гонки розширюється `monkeypatch`-затримкою.
+- CI: `.github/workflows/ci.yml` (lint, test з Postgres service, docker build); Python пінований `.python-version`.
 
 ## Масштабування
 - API stateless (JWT, без in-memory стану) → горизонтально: репліки + `UVICORN_WORKERS`.

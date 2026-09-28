@@ -1,7 +1,7 @@
 # PLAN — Task Management API
 
 Репозиторій: https://github.com/Cervin-van/task_menegement_api.git
-Статус: **усі етапи виконані** (122 тести зелені). Деталі для рев'юера — `README.md`.
+Статус: **усі етапи виконані** (129 тестів зелені, CI у GitHub Actions). Деталі для рев'юера — `README.md`.
 
 ## Узгоджені рішення по неоднозначностях ТЗ
 - Статуси: `backlog, todo, in_progress, review, done, cancelled` (Todo додано — фігурує в правилах ТЗ).
@@ -21,7 +21,7 @@ app/
   db/                   base.py (naming convention), session.py (pool з env), types.py (PriorityType)
   domain/               status.py (enums, ALLOWED_TRANSITIONS, константи), events.py (доменні події)
   models/               user.py, task.py, comment.py (lazy="raise", eager_defaults)
-  repositories/         user.py (lock FOR UPDATE), task.py (list/overdue/stats, overdue_condition), comment.py
+  repositories/         user.py (lock FOR NO KEY UPDATE), task.py (list/overdue/stats, overdue_condition), comment.py
   schemas/              auth.py, user.py, task.py, comment.py, common.py (PageParams, Page[T])
   services/             auth.py, task.py (усі бізнес-правила), comment.py
   workers/overdue.py    cancel_overdue (advisory lock + bulk UPDATE), run_worker, main (SIGTERM)
@@ -41,13 +41,13 @@ Docker Compose: `db` → `migrate` (one-shot) → `api` + `worker`; профіл
 | Виконавець незмінний у review/done | 409 `ASSIGNEE_LOCKED` |
 | Done/Cancelled не редагуються | 409 `TASK_NOT_EDITABLE` |
 | In progress/Review не видаляються | 409 `TASK_NOT_DELETABLE` |
-| ≤10 активних на виконавця (`FOR UPDATE` рядка юзера) | 409 `ASSIGNEE_TASK_LIMIT_EXCEEDED` |
+| ≤10 активних на виконавця (`FOR NO KEY UPDATE` рядка юзера) | 409 `ASSIGNEE_TASK_LIMIT_EXCEEDED` |
 | Права автор/виконавець | 403 `PERMISSION_DENIED` |
 
 ## Плюси (в межах ТЗ)
 1. Шари router → service → repository, доменні винятки з кодами, єдиний формат помилок.
 2. Стан-машина як дані + параметризований тест усієї матриці 6×6.
-3. `SELECT FOR UPDATE` на задачу і на виконавця — без гонок при лімітах і змінах статусу.
+3. `SELECT FOR NO KEY UPDATE` на задачу і на виконавця — без гонок при лімітах і змінах статусу і без блокування FK-вставок; тест з реальними паралельними транзакціями.
 4. Priority як smallint (TypeDecorator) → індексоване дефолтне сортування без CASE.
 5. pg_trgm GIN для пошуку + екранування LIKE-wildcards.
 6. Stats одним запитом з `count(*) FILTER`.
@@ -56,6 +56,7 @@ Docker Compose: `db` → `migrate` (one-shot) → `api` + `worker`; профіл
 9. JWT access + refresh з типом токена, argon2 (pwdlib), захист від timing-перебору email.
 10. Тести на реальному Postgres через міграції, savepoint-ізоляція, time-machine.
 11. Масштабування: stateless API, one-shot migrate, пул БД з env, multi-stage non-root образ, uv.lock.
+12. CI: ruff + pytest проти Postgres + docker build; обов'язковий JWT-секрет ≥ 32; єдиний формат і для 500.
 
 ## Етапи
 | # | Етап | Коміт |
@@ -71,8 +72,11 @@ Docker Compose: `db` → `migrate` (one-shot) → `api` + `worker`; профіл
 | 8 | Overdue, статистика | `feat: overdue tasks endpoint and task statistics` |
 | 9 | Воркер автоскасування | `feat: periodic worker auto-cancelling overdue tasks` |
 | 10 | README, фінальний прогін | `docs: readme with setup, architecture and tz decisions` |
+| 11a | Фікси code review | `fix: review findings (no-key locks, whitespace, 500 format, jwt secret)` |
+| 11b | Тест реальної гонки | `test: real concurrency tests for assignee limit and row locks` |
+| 11c | CI | `ci: github actions for lint, tests and docker build` |
 
 ## Верифікація
 - `docker compose up --build` → `/docs`, міграції на чистій БД застосовуються сервісом `migrate`.
-- `docker compose --profile test run --rm --build tests` → усі тести зелені.
+- `docker compose --profile test run --rm --build tests` → усі тести зелені; те саме в CI на кожен push/PR.
 - `uv run ruff check . && uv run ruff format --check .`
