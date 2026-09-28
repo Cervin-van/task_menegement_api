@@ -36,6 +36,11 @@ class TaskRepository:
             stmt = stmt.with_for_update(of=Task)
         return await self.session.scalar(stmt)
 
+    async def exists(self, task_id: int) -> bool:
+        return bool(
+            await self.session.scalar(select(select(Task.id).where(Task.id == task_id).exists()))
+        )
+
     async def add(self, task: Task) -> Task:
         self.session.add(task)
         await self.session.flush()

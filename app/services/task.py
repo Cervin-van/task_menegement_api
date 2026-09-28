@@ -234,4 +234,8 @@ class TaskService:
 
     @staticmethod
     def _not_found(task_id: int) -> NotFoundError:
-        return NotFoundError("Task not found", code="TASK_NOT_FOUND", details={"task_id": task_id})
+        return task_not_found(task_id)
+
+
+def task_not_found(task_id: int) -> NotFoundError:
+    return NotFoundError("Task not found", code="TASK_NOT_FOUND", details={"task_id": task_id})
