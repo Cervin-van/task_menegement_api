@@ -1,0 +1,103 @@
+import asyncio
+from collections.abc import AsyncIterator
+from contextlib import asynccontextmanager
+from datetime import UTC, datetime, timedelta
+from typing import Any
+
+import pytest
+from sqlalchemy import func, select
+from sqlalchemy.ext.asyncio import AsyncEngine, AsyncSession
+
+from app.domain.status import TaskStatus
+from app.models import Task
+from app.workers.overdue import ADVISORY_LOCK_KEY, cancel_overdue, run_worker
+from tests.conftest import UserFactory
+
+NOW = datetime.now(UTC)
+PAST = NOW - timedelta(hours=1)
+FUTURE = NOW + timedelta(hours=1)
+
+
+@pytest.fixture
+async def author(create_user: UserFactory) -> dict[str, Any]:
+    return await create_user()
+
+
+async def seed(session: AsyncSession, author_id: int, **fields: Any) -> int:
+    task = Task(title="Task", author_id=author_id, **fields)
+    session.add(task)
+    await session.flush()
+    return task.id
+
+
+async def status_of(session: AsyncSession, task_id: int) -> TaskStatus:
+    # Column query: always reads the DB, ignoring stale identity-map objects.
+    status = await session.scalar(select(Task.status).where(Task.id == task_id))
+    assert status is not None
+    return status
+
+
+@pytest.mark.parametrize(
+    "status",
+    [TaskStatus.BACKLOG, TaskStatus.TODO, TaskStatus.IN_PROGRESS, TaskStatus.REVIEW],
+)
+async def test_cancels_unfinished_overdue_task(
+    session: AsyncSession, author: dict[str, Any], status: TaskStatus
+) -> None:
+    task_id = await seed(session, author["id"], status=status, deadline=PAST)
+
+    cancelled = await cancel_overdue(session, NOW)
+
+    assert cancelled == [task_id]
+    assert await status_of(session, task_id) is TaskStatus.CANCELLED
+
+
+async def test_leaves_other_tasks_untouched(session: AsyncSession, author: dict[str, Any]) -> None:
+    untouched = {
+        await seed(session, author["id"], status=TaskStatus.DONE, deadline=PAST): TaskStatus.DONE,
+        await seed(
+            session, author["id"], status=TaskStatus.CANCELLED, deadline=PAST
+        ): TaskStatus.CANCELLED,
+        await seed(session, author["id"], status=TaskStatus.TODO, deadline=FUTURE): TaskStatus.TODO,
+        await seed(session, author["id"], status=TaskStatus.TODO): TaskStatus.TODO,
+    }
+
+    assert await cancel_overdue(session, NOW) == []
+    for task_id, status in untouched.items():
+        assert await status_of(session, task_id) is status
+
+
+async def test_skips_pass_when_lock_is_held_elsewhere(
+    engine: AsyncEngine, session: AsyncSession, author: dict[str, Any]
+) -> None:
+    task_id = await seed(session, author["id"], status=TaskStatus.TODO, deadline=PAST)
+
+    async with engine.connect() as other_worker:
+        await other_worker.execute(select(func.pg_advisory_lock(ADVISORY_LOCK_KEY)))
+        try:
+            cancelled = await cancel_overdue(session, NOW)
+        finally:
+            await other_worker.execute(select(func.pg_advisory_unlock(ADVISORY_LOCK_KEY)))
+
+    assert cancelled == []
+    assert await status_of(session, task_id) is TaskStatus.TODO
+
+
+async def test_run_worker_processes_and_stops_gracefully(
+    session: AsyncSession, author: dict[str, Any]
+) -> None:
+    task_id = await seed(session, author["id"], status=TaskStatus.IN_PROGRESS, deadline=PAST)
+    stop = asyncio.Event()
+    passes = 0
+
+    @asynccontextmanager
+    async def session_factory() -> AsyncIterator[AsyncSession]:
+        nonlocal passes
+        passes += 1
+        stop.set()  # stop after the first pass
+        yield session
+
+    await asyncio.wait_for(run_worker(session_factory, interval=60, stop=stop), timeout=5)
+
+    assert passes == 1
+    assert await status_of(session, task_id) is TaskStatus.CANCELLED

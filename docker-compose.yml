@@ -49,6 +49,16 @@ services:
       timeout: 3s
       retries: 5
 
+  # Auto-cancel of overdue tasks: separate process, scaled independently from the API.
+  worker:
+    <<: *app
+    command: ["python", "-m", "app.workers.overdue"]
+    depends_on:
+      db:
+        condition: service_healthy
+      migrate:
+        condition: service_completed_successfully
+
   db_test:
     image: postgres:16-alpine
     profiles: ["test"]
