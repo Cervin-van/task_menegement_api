@@ -362,3 +362,52 @@ async def test_whitespace_only_title_is_rejected(
     )
 
     assert created.status_code == updated.status_code == 422
+
+
+async def test_only_author_can_change_assignee(
+    client: AsyncClient, create_user: UserFactory, create_task: TaskFactory
+) -> None:
+    author, assignee, other = await create_user(), await create_user(), await create_user()
+    task = await create_task(author, assignee_id=assignee["id"])
+    url = f"{TASKS}/{task['id']}"
+
+    resp = await client.patch(url, json={"assignee_id": other["id"]}, headers=assignee["headers"])
+    assert resp.status_code == 403
+    assert resp.json()["error"]["code"] == "ASSIGNEE_CHANGE_FORBIDDEN"
+
+    resp = await client.patch(url, json={"assignee_id": other["id"]}, headers=author["headers"])
+    assert resp.status_code == 200
+    assert resp.json()["assignee"]["id"] == other["id"]
+
+
+async def test_create_rejects_unknown_fields(client: AsyncClient, create_user: UserFactory) -> None:
+    author = await create_user()
+
+    resp = await client.post(
+        TASKS, json={"title": "T", "status": "done"}, headers=author["headers"]
+    )
+
+    assert resp.status_code == 422
+
+
+@pytest.mark.parametrize(
+    ("method", "path", "body"),
+    [
+        ("GET", "/api/v1/tasks/99999999999", None),
+        ("PATCH", "/api/v1/tasks/99999999999", {"title": "x"}),
+        ("DELETE", "/api/v1/tasks/99999999999", None),
+        ("PATCH", "/api/v1/tasks/99999999999/status", {"status": "todo"}),
+        ("GET", "/api/v1/tasks/99999999999/comments", None),
+        ("GET", "/api/v1/tasks?assignee_id=99999999999", None),
+        ("POST", "/api/v1/tasks", {"title": "x", "assignee_id": 99999999999}),
+        ("GET", "/api/v1/tasks/0", None),
+    ],
+)
+async def test_out_of_range_ids_return_422_not_500(
+    client: AsyncClient, create_user: UserFactory, method: str, path: str, body: dict | None
+) -> None:
+    user = await create_user()
+
+    resp = await client.request(method, path, json=body, headers=user["headers"])
+
+    assert resp.status_code == 422

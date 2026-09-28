@@ -30,7 +30,8 @@ _RANK_PRIORITY = {v: k for k, v in _PRIORITY_RANK.items()}
 
 # State machine as data: only forward moves; anything else (incl. rollback) is rejected.
 ALLOWED_TRANSITIONS: dict[TaskStatus, frozenset[TaskStatus]] = {
-    TaskStatus.BACKLOG: frozenset({TaskStatus.TODO, TaskStatus.CANCELLED}),
+    # backlog -> in_progress: explicit example in the TZ; todo stays an optional planning step.
+    TaskStatus.BACKLOG: frozenset({TaskStatus.TODO, TaskStatus.IN_PROGRESS, TaskStatus.CANCELLED}),
     TaskStatus.TODO: frozenset({TaskStatus.IN_PROGRESS, TaskStatus.CANCELLED}),
     TaskStatus.IN_PROGRESS: frozenset({TaskStatus.REVIEW, TaskStatus.CANCELLED}),
     TaskStatus.REVIEW: frozenset({TaskStatus.DONE}),

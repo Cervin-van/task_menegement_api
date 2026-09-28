@@ -5,6 +5,7 @@ Each test cleans up the rows it created.
 
 import asyncio
 from collections.abc import AsyncIterator
+from datetime import UTC, datetime, timedelta
 from typing import Any
 
 import pytest
@@ -17,6 +18,7 @@ from app.models import Comment, Task, User
 from app.repositories.task import TaskRepository
 from app.schemas.task import TaskUpdate
 from app.services.task import TaskService
+from app.workers.overdue import cancel_overdue
 
 
 @pytest.fixture
@@ -112,3 +114,24 @@ async def test_locked_task_does_not_block_new_comments(
     async with factory() as s:
         texts = await s.scalars(select(Comment.text).where(Comment.task_id == task_id))
         assert list(texts) == ["while editing"]
+
+
+async def test_worker_skips_task_locked_by_user(
+    factory: async_sessionmaker[AsyncSession],
+) -> None:
+    """SKIP LOCKED: the worker doesn't wait for a user's transaction; it retries next pass."""
+    author = await make_user(factory, "author")
+    past = datetime.now(UTC) - timedelta(hours=1)
+    (task_id,) = await make_tasks(factory, author, 1, status=TaskStatus.TODO, deadline=past)
+
+    async with factory() as user_tx, factory() as worker:
+        assert await TaskRepository(user_tx).get(task_id, for_update=True) is not None
+
+        events = await asyncio.wait_for(cancel_overdue(worker, datetime.now(UTC)), timeout=3)
+        assert events == []  # skipped, not blocked
+
+        await user_tx.rollback()
+
+    async with factory() as worker:
+        events = await cancel_overdue(worker, datetime.now(UTC))
+    assert [e.task_id for e in events] == [task_id]

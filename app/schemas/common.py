@@ -1,8 +1,14 @@
 import math
 from collections.abc import Sequence
-from typing import Self
+from typing import Annotated, Self
 
+from fastapi import Path
 from pydantic import BaseModel, Field
+
+# Postgres INTEGER bounds: larger ids must be 422, not a DataError/500 from asyncpg.
+INT32_MAX = 2_147_483_647
+DbId = Annotated[int, Field(ge=1, le=INT32_MAX)]
+DbIdPath = Annotated[int, Path(ge=1, le=INT32_MAX)]
 
 
 class PageParams(BaseModel):

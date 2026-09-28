@@ -4,7 +4,7 @@ from fastapi import APIRouter, BackgroundTasks, Query, Response, status
 
 from app.api.deps import CurrentUser, TaskServiceDep
 from app.notifications import dispatch_events
-from app.schemas.common import Page, PageParams
+from app.schemas.common import DbIdPath, Page, PageParams
 from app.schemas.task import (
     TaskCreate,
     TaskListQuery,
@@ -50,13 +50,13 @@ async def task_stats(_: CurrentUser, service: TaskServiceDep) -> TaskStats:
 
 
 @router.get("/{task_id}")
-async def get_task(task_id: int, _: CurrentUser, service: TaskServiceDep) -> TaskRead:
+async def get_task(task_id: DbIdPath, _: CurrentUser, service: TaskServiceDep) -> TaskRead:
     return TaskRead.model_validate(await service.get(task_id))
 
 
 @router.patch("/{task_id}")
 async def update_task(
-    task_id: int,
+    task_id: DbIdPath,
     data: TaskUpdate,
     user: CurrentUser,
     service: TaskServiceDep,
@@ -69,7 +69,7 @@ async def update_task(
 
 @router.patch("/{task_id}/status")
 async def change_task_status(
-    task_id: int,
+    task_id: DbIdPath,
     data: TaskStatusUpdate,
     user: CurrentUser,
     service: TaskServiceDep,
@@ -81,6 +81,6 @@ async def change_task_status(
 
 
 @router.delete("/{task_id}", status_code=status.HTTP_204_NO_CONTENT)
-async def delete_task(task_id: int, user: CurrentUser, service: TaskServiceDep) -> Response:
+async def delete_task(task_id: DbIdPath, user: CurrentUser, service: TaskServiceDep) -> Response:
     await service.delete(task_id, user)
     return Response(status_code=status.HTTP_204_NO_CONTENT)

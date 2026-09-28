@@ -1,3 +1,4 @@
+from anyio import to_thread
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -28,9 +29,9 @@ class AuthService:
         if await self.users.get_by_email(email):
             raise self._email_taken(email)
 
-        user = User(
-            email=email, full_name=data.full_name, hashed_password=hash_password(data.password)
-        )
+        # argon2 is CPU-bound (~tens of ms): run in a thread, don't block the event loop.
+        hashed = await to_thread.run_sync(hash_password, data.password)
+        user = User(email=email, full_name=data.full_name, hashed_password=hashed)
         try:
             await self.users.add(user)
             await self.session.commit()
@@ -41,10 +42,9 @@ class AuthService:
 
     async def login(self, email: str, password: str) -> TokenPair:
         user = await self.users.get_by_email(email.lower())
-        if user is None:
-            verify_password(password, _DUMMY_HASH)
-            raise self._invalid_credentials()
-        if not verify_password(password, user.hashed_password):
+        hashed = user.hashed_password if user is not None else _DUMMY_HASH
+        valid = await to_thread.run_sync(verify_password, password, hashed)
+        if user is None or not valid:
             raise self._invalid_credentials()
         return self._issue_tokens(user.id)
 

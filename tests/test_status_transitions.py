@@ -13,12 +13,24 @@ from app.domain.status import (
     FINAL_STATUSES,
     MAX_ACTIVE_TASKS_PER_ASSIGNEE,
     TaskStatus,
-    can_transition,
 )
 from app.models import Task
 from tests.conftest import TaskFactory, UserFactory, future
 
 SetStatus = Callable[[int, TaskStatus], Awaitable[None]]
+
+S = TaskStatus
+# Spelled out independently of ALLOWED_TRANSITIONS, so a wrong edit there fails the matrix.
+EXPECTED_ALLOWED = {
+    (S.BACKLOG, S.TODO),
+    (S.BACKLOG, S.IN_PROGRESS),
+    (S.BACKLOG, S.CANCELLED),
+    (S.TODO, S.IN_PROGRESS),
+    (S.TODO, S.CANCELLED),
+    (S.IN_PROGRESS, S.REVIEW),
+    (S.IN_PROGRESS, S.CANCELLED),
+    (S.REVIEW, S.DONE),
+}
 
 
 def status_url(task_id: int) -> str:
@@ -64,7 +76,7 @@ async def test_transition_matrix(
     if current in FINAL_STATUSES:
         assert resp.status_code == 409
         assert resp.json()["error"]["code"] == "TASK_NOT_EDITABLE"
-    elif can_transition(current, target):
+    elif (current, target) in EXPECTED_ALLOWED:
         assert resp.status_code == 200, resp.text
         assert resp.json()["status"] == target
     else:
@@ -212,3 +224,49 @@ async def test_assignment_notifies_assignee(
         "task.assigned" in r.getMessage() and assignee["email"] in r.getMessage()
         for r in caplog.records
     )
+
+
+async def test_backlog_to_in_progress_directly(
+    client: AsyncClient, create_user: UserFactory, create_task: TaskFactory
+) -> None:
+    author, assignee = await create_user(), await create_user()
+    task = await create_task(author, assignee_id=assignee["id"])
+
+    resp = await move(client, task["id"], "in_progress", assignee)
+
+    assert resp.status_code == 200
+    assert resp.json()["status"] == "in_progress"
+
+
+async def test_backlog_to_in_progress_respects_assignee_limit(
+    client: AsyncClient,
+    session: AsyncSession,
+    create_user: UserFactory,
+    create_task: TaskFactory,
+) -> None:
+    author, busy = await create_user(), await create_user()
+    session.add_all(
+        Task(title=f"t{i}", author_id=author["id"], assignee_id=busy["id"], status=S.IN_PROGRESS)
+        for i in range(MAX_ACTIVE_TASKS_PER_ASSIGNEE)
+    )
+    await session.flush()
+    task = await create_task(author, assignee_id=busy["id"])
+
+    resp = await move(client, task["id"], "in_progress", author)
+
+    assert resp.status_code == 409
+    assert resp.json()["error"]["code"] == "ASSIGNEE_TASK_LIMIT_EXCEEDED"
+
+
+async def test_review_requires_assignee(
+    client: AsyncClient, create_user: UserFactory, create_task: TaskFactory, set_status: SetStatus
+) -> None:
+    """Otherwise the task gets stuck: assignee is locked in review and done needs one."""
+    author = await create_user()
+    task = await create_task(author)
+    await set_status(task["id"], S.IN_PROGRESS)
+
+    resp = await move(client, task["id"], "review", author)
+
+    assert resp.status_code == 409
+    assert resp.json()["error"]["code"] == "REVIEW_REQUIRES_ASSIGNEE"

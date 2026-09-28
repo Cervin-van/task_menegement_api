@@ -5,8 +5,9 @@ from sqlalchemy import ColumnElement, RowMapping, UnaryExpression, and_, func, o
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
-from app.domain.status import ACTIVE_STATUSES, FINAL_STATUSES, TaskPriority, TaskStatus
+from app.domain.status import ACTIVE_STATUSES, TaskPriority, TaskStatus
 from app.models import Task
+from app.models.task import UNFINISHED
 from app.schemas.common import PageParams
 from app.schemas.task import SortOrder, TaskListQuery, TaskSortField
 
@@ -27,7 +28,7 @@ def overdue_condition(now: datetime) -> ColumnElement[bool]:
 
     `now` comes from the app clock (not DB now()) to stay consistent with service checks.
     """
-    return and_(Task.deadline < now, Task.status.not_in(FINAL_STATUSES))
+    return and_(Task.deadline < now, UNFINISHED)
 
 
 class TaskRepository:
@@ -120,8 +121,11 @@ class TaskRepository:
         column = _SORT_COLUMNS[query.sort_by]
         order = query.order or _DEFAULT_SORT_ORDER[query.sort_by]
         primary = column.asc() if order is SortOrder.ASC else column.desc()
-        # Tasks without deadline go last in both directions; id makes pagination stable.
-        return [primary.nulls_last(), Task.id.asc()]
+        if query.sort_by is TaskSortField.DEADLINE:
+            # Tasks without deadline go last in both directions. Only here: on NOT NULL columns
+            # NULLS LAST would mismatch the index order and force a full sort.
+            primary = primary.nulls_last()
+        return [primary, Task.id.asc()]  # id makes pagination stable
 
     async def list_overdue(self, now: datetime, params: PageParams) -> tuple[Sequence[Task], int]:
         condition = overdue_condition(now)

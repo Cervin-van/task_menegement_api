@@ -43,8 +43,8 @@ class TaskService:
     async def create(self, data: TaskCreate, author: User) -> Task:
         self._ensure_deadline_not_past(data.deadline)
         if data.assignee_id is not None:
-            # New task is always backlog (not active) -> only existence check, no limit.
-            await self._lock_assignee(data.assignee_id)
+            # New task is always backlog (not active) -> no limit, no need to lock the user row.
+            await self._ensure_assignee_exists(data.assignee_id)
 
         task = Task(
             **data.model_dump(),
@@ -88,6 +88,11 @@ class TaskService:
         assignee_changed = "assignee_id" in changes and changes["assignee_id"] != task.assignee_id
 
         if assignee_changed:
+            if user.id != task.author_id:
+                # Otherwise an assignee could hand the task to anyone and lose access to it.
+                raise PermissionDeniedError(
+                    "Only the author can change the assignee", code="ASSIGNEE_CHANGE_FORBIDDEN"
+                )
             if task.status in ASSIGNEE_LOCKED_STATUSES:
                 raise BusinessRuleError(
                     f"Assignee cannot be changed in status '{task.status}'",
@@ -123,6 +128,13 @@ class TaskService:
                     "to": target,
                     "allowed": sorted(ALLOWED_TRANSITIONS[current]),
                 },
+            )
+
+        if target is TaskStatus.REVIEW and task.assignee_id is None:
+            # Assignee is locked in review and done requires one: without this check
+            # the task would be stuck in review forever.
+            raise BusinessRuleError(
+                "Task cannot go to review without an assignee", code="REVIEW_REQUIRES_ASSIGNEE"
             )
 
         if target is TaskStatus.DONE:
@@ -185,12 +197,14 @@ class TaskService:
             raise self._not_found(task_id)
         return task
 
+    async def _ensure_assignee_exists(self, user_id: int) -> None:
+        if await self.users.get_by_id(user_id) is None:
+            raise self._assignee_not_found(user_id)
+
     async def _lock_assignee(self, user_id: int) -> User:
         user = await self.users.lock(user_id)
         if user is None:
-            raise DomainValidationError(
-                "Assignee not found", code="ASSIGNEE_NOT_FOUND", details={"assignee_id": user_id}
-            )
+            raise self._assignee_not_found(user_id)
         return user
 
     async def _ensure_assignee_capacity(
@@ -246,6 +260,12 @@ class TaskService:
                 code="DEADLINE_IN_PAST",
                 details={"deadline": deadline},
             )
+
+    @staticmethod
+    def _assignee_not_found(user_id: int) -> DomainValidationError:
+        return DomainValidationError(
+            "Assignee not found", code="ASSIGNEE_NOT_FOUND", details={"assignee_id": user_id}
+        )
 
     @staticmethod
     def _not_found(task_id: int) -> NotFoundError:

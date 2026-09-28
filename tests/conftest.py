@@ -16,7 +16,7 @@ import pytest
 from alembic import command
 from alembic.config import Config
 from httpx import ASGITransport, AsyncClient
-from sqlalchemy import update
+from sqlalchemy import make_url, update
 from sqlalchemy.ext.asyncio import AsyncEngine, AsyncSession, create_async_engine
 from sqlalchemy.pool import NullPool
 
@@ -31,6 +31,10 @@ DEFAULT_PASSWORD = "Str0ngPassw0rd!"
 
 
 def _migrate() -> None:
+    # Tests drop the whole schema: refuse to run against anything but a *_test database.
+    db_name = make_url(settings.database_url).database or ""
+    if not db_name.endswith("_test"):
+        raise RuntimeError(f"Refusing to run tests against non-test database {db_name!r}")
     # Real migrations instead of create_all: tests also cover upgrade/downgrade.
     cfg = Config(str(ROOT / "alembic.ini"))
     cfg.set_main_option("script_location", str(ROOT / "alembic"))

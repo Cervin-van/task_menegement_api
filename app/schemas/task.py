@@ -5,7 +5,7 @@ from typing import Self
 from pydantic import AwareDatetime, BaseModel, ConfigDict, Field, model_validator
 
 from app.domain.status import TaskPriority, TaskStatus
-from app.schemas.common import PageParams
+from app.schemas.common import DbId, PageParams
 
 
 class UserShort(BaseModel):
@@ -17,12 +17,13 @@ class UserShort(BaseModel):
 
 
 class TaskCreate(BaseModel):
-    model_config = ConfigDict(str_strip_whitespace=True)
+    # forbid: e.g. {"status": "done"} must not be silently ignored (status has its own endpoint).
+    model_config = ConfigDict(extra="forbid", str_strip_whitespace=True)
 
     title: str = Field(min_length=1, max_length=255)
     description: str | None = None
     priority: TaskPriority = TaskPriority.MEDIUM
-    assignee_id: int | None = None
+    assignee_id: DbId | None = None
     # AwareDatetime: naive datetimes are rejected -> no ambiguity about timezone.
     deadline: AwareDatetime | None = None
 
@@ -35,7 +36,7 @@ class TaskUpdate(BaseModel):
     title: str | None = Field(default=None, min_length=1, max_length=255)
     description: str | None = None
     priority: TaskPriority | None = None
-    assignee_id: int | None = None
+    assignee_id: DbId | None = None
     deadline: AwareDatetime | None = None
 
     @model_validator(mode="after")
@@ -85,16 +86,18 @@ class TaskListQuery(PageParams):
     search: str | None = Field(default=None, min_length=1, max_length=100)
     status: list[TaskStatus] = Field(default_factory=list)
     priority: list[TaskPriority] = Field(default_factory=list)
-    assignee_id: int | None = None
+    assignee_id: DbId | None = None
     deadline_from: AwareDatetime | None = None
     deadline_to: AwareDatetime | None = None
     sort_by: TaskSortField | None = None
     order: SortOrder | None = None
 
     @model_validator(mode="after")
-    def _deadline_range(self) -> Self:
+    def _consistency(self) -> Self:
         if self.deadline_from and self.deadline_to and self.deadline_from > self.deadline_to:
             raise ValueError("deadline_from must be <= deadline_to")
+        if self.order is not None and self.sort_by is None:
+            raise ValueError("order requires sort_by")
         return self
 
 

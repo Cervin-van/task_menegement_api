@@ -25,7 +25,7 @@ docker compose up --build
 ### Тести
 
 ```bash
-docker compose --profile test run --rm --build tests      # 129 тестів проти окремого Postgres (tmpfs)
+docker compose --profile test run --rm --build tests      # 147 тестів проти окремого Postgres (tmpfs)
 ```
 
 Локально (Python 3.12+, [uv](https://docs.astral.sh/uv/)):
@@ -110,6 +110,7 @@ CI (GitHub Actions, `.github/workflows/ci.yml`): `ruff` → `pytest` проти 
 stateDiagram-v2
     [*] --> backlog
     backlog --> todo
+    backlog --> in_progress
     todo --> in_progress
     in_progress --> review
     review --> done
@@ -122,6 +123,7 @@ stateDiagram-v2
 | Правило | Код помилки |
 |---|---|
 | Лише переходи зі схеми; повернення назад — помилка | 409 `INVALID_STATUS_TRANSITION` |
+| `review` тільки з виконавцем (інакше задача застрягла б: у review виконавець заблокований) | 409 `REVIEW_REQUIRES_ASSIGNEE` |
 | `done` тільки з виконавцем | 409 `DONE_REQUIRES_ASSIGNEE` |
 | `done` не можна після дедлайну | 409 `DONE_AFTER_DEADLINE` |
 | Дедлайн при створенні/редагуванні не в минулому | 422 `DEADLINE_IN_PAST` |
@@ -130,14 +132,18 @@ stateDiagram-v2
 | `in_progress`/`review` не видаляються | 409 `TASK_NOT_DELETABLE` |
 | ≤ 10 активних задач (todo/in_progress/review) на виконавця | 409 `ASSIGNEE_TASK_LIMIT_EXCEEDED` |
 | Редагувати/міняти статус — автор або виконавець; видаляти — автор | 403 `PERMISSION_DENIED` |
+| Змінювати виконавця — тільки автор | 403 `ASSIGNEE_CHANGE_FORBIDDEN` |
+| id поза межами `INTEGER` (1..2³¹−1), невідомі поля в тілі, `order` без `sort_by` | 422 `VALIDATION_ERROR` |
 
 ### Рішення по неоднозначностях ТЗ
 
 - **Статус `Todo`.** У переліку статусів його немає, але він фігурує в правилах переходів і ліміті активних задач →
-  додано: `backlog → todo → in_progress → review → done`.
+  додано як необов'язковий крок планування: `backlog → todo → in_progress`. Прямий `backlog → in_progress`
+  (приклад із ТЗ) теж дозволений.
 - **Ліміт 10 активних** рахується для **виконавця** (це його навантаження). Перевіряється при призначенні на
-  активну задачу і при переході `backlog → todo`.
-- **Права** в ТЗ не описані: редагувати і змінювати статус — автор або виконавець, видаляти — тільки автор.
+  активну задачу і при переході з `backlog` в `todo`/`in_progress`.
+- **Права** в ТЗ не описані: редагувати і змінювати статус — автор або виконавець; змінювати виконавця і
+  видаляти — тільки автор (інакше виконавець міг би передати задачу будь-кому й сам втратити до неї доступ).
   Переглядати задачі, список, статистику і коментувати може будь-який автентифікований користувач.
 - **Автоскасування** — системний перехід з будь-якого незавершеного статусу, включно з `review`
   (для користувача `review → cancelled` заборонено). ТЗ прямо вимагає скасовувати все, що не завершено до дедлайну.
@@ -147,6 +153,9 @@ stateDiagram-v2
 - **Коментарі** дозволені й до `done`/`cancelled`: коментар — обговорення, а не редагування задачі.
 - **Статус змінюється тільки** через `PATCH /tasks/{id}/status`; поле `status` у `PATCH /tasks/{id}` → 422.
 - Нова задача завжди створюється в `backlog`.
+- **`/tasks/overdue` і `stats.overdue` зазвичай близькі до нуля**: воркер скасовує прострочені задачі щохвилини.
+  Це наслідок самого ТЗ (дві вимоги працюють над тими самими задачами); endpoint показує те, що воркер ще не
+  встиг обробити (або коли він вимкнений).
 
 ---
 
@@ -156,7 +165,7 @@ stateDiagram-v2
 api/v1 (routers, тонкі) → services (бізнес-правила) → repositories (запити) → models
                               │
                               └─ domain events ──► BackgroundTasks ──► notifications (лог)
-workers/overdue.py ── advisory lock ── bulk UPDATE ... RETURNING
+workers/overdue.py ── advisory lock ── SELECT ... SKIP LOCKED + bulk UPDATE ── domain events ──► notifications
 ```
 
 Ключові рішення:
@@ -166,11 +175,13 @@ workers/overdue.py ── advisory lock ── bulk UPDATE ... RETURNING
   - Редагування і зміна статусу беруть задачу через `SELECT ... FOR NO KEY UPDATE`.
   - Ліміт 10 задач: спершу такий самий лок на рядок виконавця, потім `count`. Два паралельні призначення не проскочать ліміт — це перевіряє тест із реальними паралельними транзакціями.
   - Саме `NO KEY`, а не `FOR UPDATE`: FK-перевірки при INSERT беруть `KEY SHARE` на батьківський рядок. З `FOR UPDATE` редагування задачі блокувало б додавання коментарів до неї, а призначення на користувача — створення ним нових задач.
-  - Воркер і користувач: якщо користувач тримає лок і закриває задачу, `UPDATE` воркера чекає.
-    Потім під READ COMMITTED він переперевіряє `WHERE` і не скасує вже завершену задачу.
+  - Воркер і користувач: воркер лочить кандидатів `FOR NO KEY UPDATE SKIP LOCKED`. Задачу, яку користувач
+    саме редагує (наприклад, закриває), воркер не чекає, а пропускає до наступного проходу.
+  - Deadlock неможливий: усюди порядок «задача → користувач», воркер лочить лише задачі.
 - **Воркер** (`app/workers/overdue.py`).
   - `pg_try_advisory_xact_lock`: неблокуючий, знімається сам на commit/rollback, тож падіння процесу не залишить завислого лока.
-  - Один `UPDATE ... RETURNING` замість завантаження кожного рядка окремо.
+  - Один `SELECT` (разом з email для нотифікацій) і один масовий `UPDATE` замість збереження кожного рядка.
+  - Після commit надсилає ті самі події `TaskStatusChanged`, що й ручна зміна статусу — автору і виконавцю.
   - Graceful shutdown по SIGTERM.
 - **Нотифікації.** Сервіс після успішного `commit` складає доменні події (`TaskAssigned`, `TaskStatusChanged`).
   Роутер віддає їх у FastAPI `BackgroundTasks`. Доставка зараз — структурований лог. Щоб перейти на email чи
@@ -185,11 +196,18 @@ workers/overdue.py ── advisory lock ── bulk UPDATE ... RETURNING
   - Пріоритет зберігається як `smallint` (1/2/3) через `TypeDecorator`, тож сортування не потребує `CASE`.
   - GIN `pg_trgm` на `title`/`description` — під `ILIKE '%q%'`. Спецсимволи `%`, `_`, `\` у пошуковому запиті екрануються.
   - `(task_id, created_at)` — для коментарів.
+  - `created_at` — під `sort_by=created_at`.
+  - Partial `(deadline) WHERE status NOT IN ('cancelled','done')` — для overdue, статистики і воркера: завершена
+    історія не роздуває скан. Умова в запитах записана літералами (а не bind-параметрами), тож Postgres бере
+    цей індекс і в generic-плані prepared statement (asyncpg).
+  - `NULLS LAST` лише для `deadline`: на NOT NULL-колонках він не збігся б з порядком індексу і вимкнув би його.
+  - `CHECK (priority BETWEEN 1 AND 3)` — щоб зіпсоване значення не ламало читання.
   - Окремі індекси на `status`, `assignee_id`, `deadline`, `author_id`.
 - **Стабільна пагінація** — останнім ключем сортування завжди йде `id`.
 - **Auth.**
   - Пара токенів access і refresh. Поле `type` у токені не дає використати refresh-токен як access і навпаки.
-  - Паролі хешуються argon2 (`pwdlib`; passlib більше не підтримується).
+  - Паролі хешуються argon2 (`pwdlib`; passlib більше не підтримується) у thread pool — CPU-важке хешування
+    не блокує event loop і решту запитів.
   - Для невідомого email пароль перевіряється проти фіктивного хешу, тож за часом відповіді не видно, які email зареєстровані.
 - **Async-безпека.** Усі зв'язки моделей — `lazy="raise"`, тож кожне завантаження явне (`selectinload`).
   `eager_defaults` повертає `created_at`/`updated_at` одразу при записі через `RETURNING`.
@@ -197,7 +215,10 @@ workers/overdue.py ── advisory lock ── bulk UPDATE ... RETURNING
   - Справжній Postgres, схема будується міграціями (`downgrade base → upgrade head`).
   - Кожен тест іде в транзакції з відкатом; `commit` у сервісах стає savepoint.
   - Час підміняється через `time-machine`.
-  - 129 тестів, серед них повна матриця переходів статусів, гонка за advisory lock, graceful stop воркера і реальна паралельна гонка за ліміт. Перевірено: без локів ці тести падають.
+  - 147 тестів, серед них повна матриця переходів статусів (очікування прописані в тесті явно, а не взяті з
+    коду), гонка за advisory lock, SKIP LOCKED воркера, graceful stop і реальна паралельна гонка за ліміт.
+    Перевірено: без локів ці тести падають.
+  - Тести відмовляються стартувати, якщо назва БД не закінчується на `_test` (вони роблять `downgrade base`).
 - **Помилки.**
   - Доменні винятки, валідація, HTTP-помилки і необроблені винятки віддаються в одному форматі; для 500 деталі йдуть тільки в лог.
   - `JWT_SECRET_KEY` обов'язковий і не коротший за 32 символи — з небезпечним секретом застосунок не стартує.
@@ -220,7 +241,16 @@ alembic/          async env, міграції
 tests/            conftest.py + тести по фічах
 ```
 
-### Свідомо поза scope
+### Свідомо поза scope / наступні кроки для production
 
-Відкликання refresh-токенів (blacklist по `jti`), ролі/адмінка, реальна доставка email, rate limiting,
-курсорна пагінація.
+- **Auth:** відкликання і ротація refresh-токенів (blacklist по `jti`), rate limiting на `/auth/login`, ролі.
+- **Нотифікації:** зараз `BackgroundTasks` у процесі API — при падінні процесу після commit подія губиться.
+  Для гарантованої доставки: transactional outbox + черга (Redis/RabbitMQ) з retry.
+- **БД під навантаженням:** keyset-пагінація замість `OFFSET` + `COUNT(*)`; кеш або агрегатна таблиця для
+  stats; PgBouncer (transaction mode, `statement_cache_size=0` для asyncpg); read-репліки для списків.
+- **Воркер на великих обсягах:** батчі (`LIMIT 1000` у циклі), щоб не тримати локи на тисячах рядків.
+- **Пул з'єднань:** `репліки × UVICORN_WORKERS × (DB_POOL_SIZE + DB_MAX_OVERFLOW)` має бути менше за
+  `max_connections` (100 за замовчуванням); з `.env.example` це 40 на репліку. Воркеру достатньо `DB_POOL_SIZE=1`.
+- **Операційне:** `/health/live` і `/health/ready` окремо, healthcheck воркера, JSON-логи з request-id,
+  метрики, трейсинг; секрети через vault замість `.env`.
+- **Масштабування API в compose:** `--scale api=N` потребує балансувальника (порт `8000` зараз фіксований).

@@ -1,5 +1,6 @@
 from collections.abc import Sequence
 
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models import Comment, User
@@ -21,10 +22,14 @@ class CommentService:
 
     async def add(self, task_id: int, data: CommentCreate, author: User) -> Comment:
         await self._ensure_task_exists(task_id)
-        comment = await self.comments.add(
-            Comment(task_id=task_id, author_id=author.id, text=data.text)
-        )
-        await self.session.commit()
+        try:
+            comment = await self.comments.add(
+                Comment(task_id=task_id, author_id=author.id, text=data.text)
+            )
+            await self.session.commit()
+        except IntegrityError as exc:  # task deleted between the check and the insert
+            await self.session.rollback()
+            raise task_not_found(task_id) from exc
         # Re-read with author loaded (relationships are lazy="raise").
         created = await self.comments.get(comment.id)
         if created is None:  # deleted concurrently together with its task (CASCADE)

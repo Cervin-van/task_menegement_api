@@ -267,3 +267,9 @@ async def test_invalid_pagination_returns_422(
     resp = await client.get(TASKS, params=params, headers=user["headers"])
 
     assert resp.status_code == 422
+
+
+async def test_order_without_sort_by_returns_422(client: AsyncClient, user: dict[str, Any]) -> None:
+    resp = await client.get(TASKS, params={"order": "desc"}, headers=user["headers"])
+
+    assert resp.status_code == 422

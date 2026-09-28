@@ -1,4 +1,5 @@
 import asyncio
+import logging
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 from datetime import UTC, datetime, timedelta
@@ -46,9 +47,12 @@ async def test_cancels_unfinished_overdue_task(
 ) -> None:
     task_id = await seed(session, author["id"], status=status, deadline=PAST)
 
-    cancelled = await cancel_overdue(session, NOW)
+    events = await cancel_overdue(session, NOW)
 
-    assert cancelled == [task_id]
+    assert [e.task_id for e in events] == [task_id]
+    assert events[0].old_status is status
+    assert events[0].new_status is TaskStatus.CANCELLED
+    assert events[0].recipients == (author["email"],)
     assert await status_of(session, task_id) is TaskStatus.CANCELLED
 
 
@@ -101,3 +105,35 @@ async def test_run_worker_processes_and_stops_gracefully(
 
     assert passes == 1
     assert await status_of(session, task_id) is TaskStatus.CANCELLED
+
+
+async def test_notifies_author_and_assignee(
+    session: AsyncSession,
+    create_user: UserFactory,
+    author: dict[str, Any],
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    assignee = await create_user()
+    task_id = await seed(
+        session,
+        author["id"],
+        status=TaskStatus.IN_PROGRESS,
+        deadline=PAST,
+        assignee_id=assignee["id"],
+    )
+    stop = asyncio.Event()
+
+    @asynccontextmanager
+    async def session_factory() -> AsyncIterator[AsyncSession]:
+        stop.set()
+        yield session
+
+    caplog.set_level(logging.INFO, logger="app.notifications")
+    await asyncio.wait_for(run_worker(session_factory, interval=60, stop=stop), timeout=5)
+
+    messages = [r.getMessage() for r in caplog.records if r.name == "app.notifications"]
+    for email in (author["email"], assignee["email"]):
+        assert any(
+            f"task_id={task_id}" in m and email in m and "in_progress->cancelled" in m
+            for m in messages
+        )

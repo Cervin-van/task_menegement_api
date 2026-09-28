@@ -1,3 +1,4 @@
+import pytest
 from httpx import AsyncClient
 
 from tests.conftest import DEFAULT_PASSWORD, UserFactory
@@ -119,3 +120,17 @@ async def test_refresh_token_cannot_be_used_as_access(
     )
 
     assert resp.status_code == 401
+
+
+@pytest.mark.parametrize(
+    ("password", "full_name"), [(" " * 10, "Name"), ("Str0ngPassw0rd!", "   ")]
+)
+async def test_register_blank_password_or_name_returns_422(
+    client: AsyncClient, password: str, full_name: str
+) -> None:
+    resp = await client.post(
+        REGISTER,
+        json={"email": "blank@example.com", "password": password, "full_name": full_name},
+    )
+
+    assert resp.status_code == 422

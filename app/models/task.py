@@ -1,11 +1,20 @@
 from datetime import datetime
 
-from sqlalchemy import DateTime, Enum, ForeignKey, Index, String, Text
+from sqlalchemy import (
+    CheckConstraint,
+    DateTime,
+    Enum,
+    ForeignKey,
+    Index,
+    String,
+    Text,
+    literal_column,
+)
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from app.db.base import Base
 from app.db.types import PriorityType
-from app.domain.status import TaskPriority, TaskStatus
+from app.domain.status import FINAL_STATUSES, TaskPriority, TaskStatus
 from app.models.mixins import TimestampMixin
 from app.models.user import User
 
@@ -43,6 +52,8 @@ class Task(TimestampMixin, Base):
     __mapper_args__ = {"eager_defaults": True}  # noqa: RUF012
 
     __table_args__ = (
+        # PriorityType maps only 1..3; anything else would break reads.
+        CheckConstraint("priority BETWEEN 1 AND 3", name="priority_range"),
         # ILIKE '%q%' search on title/description.
         Index(
             "ix_tasks_title_trgm",
@@ -59,5 +70,12 @@ class Task(TimestampMixin, Base):
     )
 
 
+# "Unfinished" with inline literals (not bind params): lets the planner match the partial index
+# below even for generic prepared-statement plans.
+UNFINISHED = Task.status.not_in([literal_column(f"'{s.value}'") for s in sorted(FINAL_STATUSES)])
+
 # Default list ordering: priority DESC, deadline ASC NULLS LAST.
 Index("ix_tasks_priority_deadline", Task.priority.desc(), Task.deadline.asc().nulls_last())
+Index("ix_tasks_created_at", Task.created_at)
+# Overdue endpoint/stats/worker only look at unfinished tasks: finished history doesn't bloat it.
+Index("ix_tasks_unfinished_deadline", Task.deadline, postgresql_where=UNFINISHED)

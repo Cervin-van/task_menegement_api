@@ -1,12 +1,28 @@
 from typing import Literal
 
-from pydantic import BaseModel, EmailStr, Field
+from pydantic import BaseModel, EmailStr, Field, field_validator
 
 
 class UserCreate(BaseModel):
     email: EmailStr
+    # Not stripped: whitespace is a legitimate part of a password, but not all of it.
     password: str = Field(min_length=8, max_length=128)
     full_name: str = Field(min_length=1, max_length=255)
+
+    @field_validator("full_name")
+    @classmethod
+    def _strip_name(cls, value: str) -> str:
+        value = value.strip()
+        if not value:
+            raise ValueError("full_name cannot be blank")
+        return value
+
+    @field_validator("password")
+    @classmethod
+    def _password_not_blank(cls, value: str) -> str:
+        if not value.strip():
+            raise ValueError("password cannot be blank")
+        return value
 
 
 class TokenPair(BaseModel):
